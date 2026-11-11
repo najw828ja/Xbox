@@ -1,10 +1,11 @@
 /**
- * عميل خدمة دمج الفيديوهات — Video Merger API (الإصدار الثاني: dmg1.vercel.app)
+ * عميل محرك دمج الفيديوهات — مدمج داخل المشروع نفسه (لا خدمة خارجية).
  *
- * دمج عدة مقاطع فيديو في مقطع واحد — دون تنزيل أي وسائط على هذا السيرفر:
- * نرسل روابط الفيديوهات للخدمة، ننفّذ الدمج، ونخزّن رابط الفيديو النهائي في Turso.
+ * دمج عدة مقاطع فيديو في مقطع واحد — نداءات REST داخلية إلى مسارات /api/merge/*
+ * في نفس التطبيق (النمط القياسي على Vercel: نداء داخلي يشغّل دالة مستقلة تعمل
+ * في الخلفية وتحدّث Turso حتى لو انتهى طلب MCP).
  *
- * REST (عنوان الخدمة MERGER_API_BASE):
+ * REST (العنوان الافتراضي = هذا التطبيق نفسه، أو MERGER_API_BASE إن ضُبط):
  *   POST   /api/jobs                    {videos:[...]} → {jobId, status:"queued", ...}
  *   POST   /api/jobs/{id}/process       تنفيذ الدمج (يحجب حتى الاكتمال عادةً)
  *                                        → {status:"done", videoUrl, downloadUrl, ...} أو {error}
@@ -19,9 +20,16 @@
  */
 import { insertTask, updateTask, type TaskRow } from "./tasks";
 
-export const MERGER_BASE = (process.env.MERGER_API_BASE || "https://dmg1.vercel.app")
-  .trim()
-  .replace(/\/+$/, "");
+/** عنوان محرك الدمج: افتراضيًا هذا التطبيق نفسه (مشروع واحد) */
+export function mergerBase(): string {
+  const explicit = process.env.MERGER_API_BASE?.trim().replace(/\/+$/, "");
+  if (explicit) return explicit;
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) return `https://${vercelUrl}`;
+  if (process.env.NODE_ENV === "development") return "http://127.0.0.1:3000";
+  const prod = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+  return prod ? `https://${prod}` : "http://127.0.0.1:3000";
+}
 
 export const MERGER_MODEL = "video-merger";
 
@@ -109,9 +117,9 @@ export function parseJobStatus(data: unknown): MergeJobStatus {
   const videoRaw =
     pickStr(job.videoUrl, job.video_url, job.downloadUrl, job.download_url, root.videoUrl, root.video_url, root.downloadUrl, root.download_url, result.videoUrl, result.downloadUrl) ??
     undefined;
-  const url = toAbsoluteUrl(videoRaw, MERGER_BASE)
+  const url = toAbsoluteUrl(videoRaw, mergerBase())
     // احتياط أخير: نبني الرابط من معرّف المهمة وفق مخطط الخدمة الثابت
-    ?? (completed && jobId ? `${MERGER_BASE}/api/jobs/${encodeURIComponent(jobId)}/video` : undefined);
+    ?? (completed && jobId ? `${mergerBase()}/api/merge/jobs/${encodeURIComponent(jobId)}/video` : undefined);
 
   return {
     status: completed ? "completed" : failed ? "failed" : "processing",
@@ -152,10 +160,10 @@ function isServiceDeclaredError(err: unknown): boolean {
   return err instanceof Error && /خدمة الدمج ردّت \d{3}/.test(err.message);
 }
 
-/** فحص جهوزية خدمة الدمج (يُستخدم في /api/health) — عبر /api/config */
+/** فحص جهوزية محرك الدمج (يُستخدم في /api/health) — عبر /api/merge/config */
 export async function mergerHealthy(): Promise<boolean> {
   try {
-    const res = await fetch(`${MERGER_BASE}/api/config`, { signal: AbortSignal.timeout(4_000), cache: "no-store" });
+    const res = await fetch(`${mergerBase()}/api/merge/config`, { signal: AbortSignal.timeout(4_000), cache: "no-store" });
     return res.ok;
   } catch {
     return false;
@@ -166,7 +174,7 @@ export async function mergerHealthy(): Promise<boolean> {
 export async function createMergeJob(opts: { urls: string[] }, signal?: AbortSignal): Promise<string> {
   if (signal?.aborted) throw new Error("aborted");
   const body = await fetchJson(
-    `${MERGER_BASE}/api/jobs`,
+    `${mergerBase()}/api/merge/jobs`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -183,7 +191,7 @@ export async function createMergeJob(opts: { urls: string[] }, signal?: AbortSig
 export async function processMergeJob(jobId: string, signal?: AbortSignal): Promise<MergeJobStatus> {
   if (signal?.aborted) throw new Error("aborted");
   const body = await fetchJson(
-    `${MERGER_BASE}/api/jobs/${encodeURIComponent(jobId)}/process`,
+    `${mergerBase()}/api/merge/jobs/${encodeURIComponent(jobId)}/process`,
     { method: "POST", headers: { "Content-Type": "application/json" } },
     PROCESS_TIMEOUT_MS
   );
@@ -192,7 +200,7 @@ export async function processMergeJob(jobId: string, signal?: AbortSignal): Prom
 
 /** الاستعلام عن حالة مهمة دمج */
 export async function getMergeJob(jobId: string): Promise<MergeJobStatus> {
-  const body = await fetchJson(`${MERGER_BASE}/api/jobs/${encodeURIComponent(jobId)}`);
+  const body = await fetchJson(`${mergerBase()}/api/merge/jobs/${encodeURIComponent(jobId)}`);
   return parseJobStatus(body);
 }
 

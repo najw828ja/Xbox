@@ -255,14 +255,14 @@
       <table>
         <thead><tr><th>Method</th><th>Endpoint</th><th>الوظيفة</th></tr></thead>
         <tbody>
-          <tr><td class="method post">POST</td><td>/api/jobs</td><td>إنشاء مهمة دمج (روابط و/أو ملفات)</td></tr>
-          <tr><td class="method post">POST</td><td>/api/upload?job=&amp;seq=&amp;chunk=</td><td>رفع أجزاء الملفات (ثنائي ≤4MB)</td></tr>
-          <tr><td class="method post">POST</td><td>/api/jobs/{id}/process</td><td>تنفيذ الدمج (متزامن، 202 لو جارية)</td></tr>
-          <tr><td class="method get">GET</td><td>/api/jobs/{id}</td><td>الحالة + التقدم + الرابط عند الاكتمال</td></tr>
-          <tr><td class="method get">GET</td><td>/api/jobs/{id}/video</td><td>بث الناتج (Range 206) — ?download=1 للتحميل</td></tr>
-          <tr><td class="method del">DELETE</td><td>/api/jobs/{id}</td><td>حذف فوري شامل</td></tr>
-          <tr><td class="method get">GET</td><td>/api/config</td><td>الحدود العامة + الإصدار</td></tr>
-          <tr><td class="method get">GET</td><td>/api/cron</td><td>حذف المهام المنتهية (Cron يومي)</td></tr>
+          <tr><td class="method post">POST</td><td>/api/merge/jobs</td><td>إنشاء مهمة دمج (روابط و/أو ملفات)</td></tr>
+          <tr><td class="method post">POST</td><td>/api/merge/upload?job=&amp;seq=&amp;chunk=</td><td>رفع أجزاء الملفات (ثنائي ≤4MB)</td></tr>
+          <tr><td class="method post">POST</td><td>/api/merge/jobs/{id}/process</td><td>تنفيذ الدمج (متزامن، 202 لو جارية)</td></tr>
+          <tr><td class="method get">GET</td><td>/api/merge/jobs/{id}</td><td>الحالة + التقدم + الرابط عند الاكتمال</td></tr>
+          <tr><td class="method get">GET</td><td>/api/merge/jobs/{id}/video</td><td>بث الناتج (Range 206) — ?download=1 للتحميل</td></tr>
+          <tr><td class="method del">DELETE</td><td>/api/merge/jobs/{id}</td><td>حذف فوري شامل</td></tr>
+          <tr><td class="method get">GET</td><td>/api/merge/config</td><td>الحدود العامة + الإصدار</td></tr>
+          <tr><td class="method get">GET</td><td>/api/merge/cron</td><td>حذف المهام المنتهية (Cron يومي)</td></tr>
         </tbody>
       </table>
       <h3>أمثلة curl</h3>
@@ -482,7 +482,7 @@
         : { kind:'file', name:s.name, size:s.size, mime:s.file ? (s.file.type || 'video/mp4') : 'video/mp4' };
     })};
 
-    fetch(API + '/api/jobs', {
+    fetch(API + '/api/merge/jobs', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(body),
     })
@@ -521,7 +521,7 @@
             }
             var from = ci * chunkBytes;
             var to = Math.min(from + chunkBytes, all.byteLength);
-            var url = (API + '/api/upload?job=' + encodeURIComponent(jobId) + '&seq=' + seqIdx + '&chunk=' + ci);
+            var url = (API + '/api/merge/upload?job=' + encodeURIComponent(jobId) + '&seq=' + seqIdx + '&chunk=' + ci);
             return uploadChunkWithRetry(url, all.slice(from, to)).then(function(){
               ci++; uploadDone++;
               setProgress(Math.max(1, Math.floor(10 * uploadDone / Math.max(1,uploadTotal))),
@@ -544,7 +544,7 @@
   function runProcess(jobId){
     setProgress(10, 'سحب المصادر وترميز الفيديو…');
     startPolling(jobId);
-    return fetch(API + '/api/jobs/' + encodeURIComponent(jobId) + '/process', { method:'POST' })
+    return fetch(API + '/api/merge/jobs/' + encodeURIComponent(jobId) + '/process', { method:'POST' })
     .then(function(r){
       if (r.status === 202) return r.json(); // جارية — الاستطلاع يتكفل
       if (!r.ok) return r.json().catch(function(){return {};}).then(function(j){ throw new Error(j.error || ('HTTP ' + r.status)); });
@@ -565,7 +565,7 @@
   function startPolling(jobId){
     stopPolling();
     pollTimer = setInterval(function(){
-      fetch(API + '/api/jobs/' + encodeURIComponent(jobId))
+      fetch(API + '/api/merge/jobs/' + encodeURIComponent(jobId))
       .then(function(r){ return r.ok ? r.json() : null; })
       .then(function(j){
         if (!j) return;
@@ -594,7 +594,7 @@
     $('resultCard').style.display = 'block';
     window.scrollTo({ top:0, behavior:'smooth' });
 
-    var videoUrl = API + '/api/jobs/' + encodeURIComponent(jobId) + '/video';
+    var videoUrl = API + '/api/merge/jobs/' + encodeURIComponent(jobId) + '/video';
     $('player').src = videoUrl;
     $('dlBtn').href = videoUrl + '?download=1';
     $('dlBtn').setAttribute('download', 'merged-' + jobId + '.mp4');
@@ -649,7 +649,7 @@
     $('mergeBtn').disabled = true;
     showProg(true);
     setProgress(5, 'استرجاع المهمة…');
-    fetch(API + '/api/jobs/' + encodeURIComponent(jobId))
+    fetch(API + '/api/merge/jobs/' + encodeURIComponent(jobId))
     .then(function(r){
       if (!r.ok) return r.json().catch(function(){return {};}).then(function(j){ throw new Error(j.error || ('HTTP ' + r.status)); });
       return r.json();
@@ -667,7 +667,7 @@
         }
         startPolling(jobId);
         // لو توقفت المعالجة (السيرفر أُعيد تشغيله) نعيد تشغيلها
-        fetch(API + '/api/jobs/' + encodeURIComponent(jobId) + '/process', { method:'POST' })
+        fetch(API + '/api/merge/jobs/' + encodeURIComponent(jobId) + '/process', { method:'POST' })
           .then(function(r){ return r.json(); })
           .then(function(j2){
             if (j2 && j2.status === 'done'){ stopPolling(); setProgress(100,'اكتمل!'); setTimeout(function(){ showResult(jobId, j2); }, 350); }
@@ -684,11 +684,11 @@
   function fillDocs(){
     var origin = location.origin;
     var L = [
-      ['exCreate', 'curl -X POST ' + origin + '/api/jobs \\\n  -H "Content-Type: application/json" \\\n  -d \'{"videos":["https://example.com/a.mp4","https://example.com/b.mp4"]}\'\n\n# الاستجابة 201:\n# {"jobId":"...","status":"queued","statusUrl":"...","processUrl":"...","expiresAt":"..."}'],
-      ['exStatus', '# متابعة الحالة والتقدم (0–100)\ncurl ' + origin + '/api/jobs/<jobId>\n\n# الاستجابة 200 عند الاكتمال:\n# {"jobId":"...","status":"done","progress":100,"videoUrl":"...","size":...,"duration":...,"resolution":"1280x720"}'],
-      ['exProcess', '# تنفيذ الدمج (متزامن — قد يستغرق وقتًا)\ncurl -X POST ' + origin + '/api/jobs/<jobId>/process\n\n# الاستجابة 200:\n# {"status":"done","videoUrl":"...","downloadUrl":"...","size":...,"duration":...,"resolution":"...","expiresAt":"..."}\n# 202 لو جارية بالفعل'],
-      ['exDownload', '# تحميل الفيديو الناتج\ncurl -o merged.mp4 "' + origin + '/api/jobs/<jobId>/video?download=1"\n\n# البث يدعم Range (206) للتقديم والترجيع:\ncurl -H "Range: bytes=0-1023" ' + origin + '/api/jobs/<jobId>/video'],
-      ['exDelete', '# حذف فوري شامل (قبل انتهاء 24 ساعة)\ncurl -X DELETE ' + origin + '/api/jobs/<jobId>\n\n# الاستجابة 200:\n# {"deleted":true,"jobId":"..."}'],
+      ['exCreate', 'curl -X POST ' + origin + '/api/merge/jobs \\\n  -H "Content-Type: application/json" \\\n  -d \'{"videos":["https://example.com/a.mp4","https://example.com/b.mp4"]}\'\n\n# الاستجابة 201:\n# {"jobId":"...","status":"queued","statusUrl":"...","processUrl":"...","expiresAt":"..."}'],
+      ['exStatus', '# متابعة الحالة والتقدم (0–100)\ncurl ' + origin + '/api/merge/jobs/<jobId>\n\n# الاستجابة 200 عند الاكتمال:\n# {"jobId":"...","status":"done","progress":100,"videoUrl":"...","size":...,"duration":...,"resolution":"1280x720"}'],
+      ['exProcess', '# تنفيذ الدمج (متزامن — قد يستغرق وقتًا)\ncurl -X POST ' + origin + '/api/merge/jobs/<jobId>/process\n\n# الاستجابة 200:\n# {"status":"done","videoUrl":"...","downloadUrl":"...","size":...,"duration":...,"resolution":"...","expiresAt":"..."}\n# 202 لو جارية بالفعل'],
+      ['exDownload', '# تحميل الفيديو الناتج\ncurl -o merged.mp4 "' + origin + '/api/merge/jobs/<jobId>/video?download=1"\n\n# البث يدعم Range (206) للتقديم والترجيع:\ncurl -H "Range: bytes=0-1023" ' + origin + '/api/merge/jobs/<jobId>/video'],
+      ['exDelete', '# حذف فوري شامل (قبل انتهاء 24 ساعة)\ncurl -X DELETE ' + origin + '/api/merge/jobs/<jobId>\n\n# الاستجابة 200:\n# {"deleted":true,"jobId":"..."}'],
     ];
     L.forEach(function(x){ $(x[0]).textContent = x[1]; });
     document.querySelectorAll('pre .copy').forEach(function(btn){
@@ -702,7 +702,7 @@
   }
 
   // ---------- الإقلاع ----------
-  fetch(API + '/api/config')
+  fetch(API + '/api/merge/config')
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(c){
       if (!c) return;

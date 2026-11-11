@@ -1,12 +1,12 @@
 {
   "functions": {
-    "api/**/*.js": {
+    "src/app/api/merge/jobs/[id]/process/route.ts": {
       "maxDuration": 300
     }
   },
   "crons": [
     {
-      "path": "/api/cron",
+      "path": "/api/merge/cron",
       "schedule": "0 3 * * *"
     }
   ]

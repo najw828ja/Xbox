@@ -1,9 +1,8 @@
 # MCP Media Generator + Video Merger
 
-مشروعان متكاملان جاهزان للنشر على Vercel:
+مشروع واحد متكامل جاهز للنشر على Vercel (Next.js):
 
-1. **خادم MCP لتوليد الوسائط** (جذر المستودع — Next.js): توليد صور وفيديو بالذكاء الاصطناعي عبر `gpt-image-2-6/flare-text-to-image` و`grok-imagine-video-1-5-preview`، مع دمج الفيديوهات، وتبديل تسلسلي تلقائي بين مفاتيح API، ولوحة إدارة عربية.
-2. **موقع دمج الفيديوهات** (`video-merger/` — Node.js خالص + Vercel Functions): خدمة دمج مقاطع الفيديو بـ ffmpeg مع API عامة وواجهة عربية — وهي خدمة الدمج التي يعتمد عليها خادم MCP عبر `MERGER_API_BASE`.
+**خادم MCP لتوليد الوسائط ودمج الفيديوهات** — توليد صور وفيديو بالذكاء الاصطناعي عبر `gpt-image-2-6/flare-text-to-image` و`grok-imagine-video-1-5-preview`، مع محرك دمج فيديوهات مدمج بـ ffmpeg، وتبديل تسلسلي تلقائي بين مفاتيح API، ولوحة إدارة عربية، وصفحة دمج عامة على `/merge.html`.
 
 ## الأدوات الخمس على /mcp
 
@@ -17,37 +16,39 @@
 
 ## قواعد جوهرية
 
-- **لا وسائط تُنزَّل على السيرفر** — روابط النتائج فقط تُخزَّن في Turso.
+- **لا وسائط توليد تُنزَّل على السيرفر** — روابط النتائج فقط تُخزَّن في Turso (مصادر ونتائج الدمج تُحذف تلقائيًا بعد 24 ساعة).
 - **تبديل تسلسلي صارم**: المفاتيح تُجرَّب بترتيب إضافتها (`created_at ASC`)، وعند أي فشل تنتقل المهمة للمفتاح التالي **بنفس `task_id`** وبصمت تام — نموذج الذكاء الاصطناعي لا يرى أخطاء المفاتيح أو الأرصدة أبدًا.
 - المفتاح المرفوض (401/403) يُعطَّل تلقائيًا، والمستنزف (402) يبقى في القاعدة ويُعاد تجربته عند شحن رصيده.
 - مهمة تفشل على كل المفاتيح تبقى `processing` وتُعاد محاولتها تلقائيًا مع كل `get_task` (تهدئة 45 ثانية).
-- ملفات الدمج تُحذف من خدمة الدمج بعد ~24 ساعة.
+- ملفات الدمج تُحذف بعد ~24 ساعة (تنظيف تلقائي عبر Cron يومي).
 - إخفاء المفاتيح إلزامي في كل الاستجابات (`maskKey`).
+
+## محرك دمج الفيديو (مدمج في المشروع)
+
+محرك ffmpeg كامل داخل المشروع نفسه — لا خدمة خارجية:
+
+- **API عامة** تحت `/api/merge/*`: `POST /api/merge/jobs` (إنشاء مهمة) → `POST /api/merge/jobs/{id}/process` (تنفيذ) → `GET /api/merge/jobs/{id}` (الحالة والتقدم) → `GET /api/merge/jobs/{id}/video` (بث الناتج مع Range 206 و `?download=1`) → `DELETE /api/merge/jobs/{id}`.
+- أداة `merge_videos` على `/mcp` تستدعي هذه المسارات داخليًا في نفس التطبيق.
+- **واجهة دمج عامة** على `/merge.html`: روابط و/أو رفع ملفات بأجزاء 4MB، تقدم حي، تحميل مباشر، وتوثيق API بأمثلة curl.
+- مواصفات الناتج: H.264 + AAC حتى 1080p، CRF 18، حتى 10 مقاطع، 200MB/مصدر، 150MB ناتج، 600 ثانية إجمالية.
 
 ## متغيرات البيئة
 
-| المتغير | المشروع | إلزامي |
-|---|---|---|
-| `TURSO_DATABASE_URL` | الاثنان | ✅ |
-| `TURSO_AUTH_TOKEN` | الاثنان | ✅ |
-| `MERGER_API_BASE` | خادم MCP | — (افتراضي `https://dmg1.vercel.app` — غيّره لدومين موقع الدمج الخاص بك بعد نشره) |
-| `MCP_ACCESS_TOKEN` | خادم MCP | — (حماية اختيارية لمسار `/mcp` بـ Bearer token) |
-| `KIE_IMAGE_MODEL` / `KIE_VIDEO_MODEL` / `COMETAPI_IMAGE_MODEL` / `COMETAPI_VIDEO_MODEL` | خادم MCP | — (تجاوز أسماء الموديلات) |
-| `MAX_SOURCES` / `SOURCE_MAX_MB` / `OUTPUT_MAX_MB` / `MAX_TOTAL_DURATION_SEC` / `FFMPEG_PRESET` | video-merger | — |
+| المتغير | إلزامي |
+|---|---|
+| `TURSO_DATABASE_URL` | ✅ |
+| `TURSO_AUTH_TOKEN` | ✅ |
+| `MERGER_API_BASE` | — (افتراضيًا التطبيق نفسه؛ أضِفه فقط لو فصلت الدمج في تطبيق آخر) |
+| `MCP_ACCESS_TOKEN` | — (حماية اختيارية لمسار `/mcp` بـ Bearer token) |
+| `KIE_IMAGE_MODEL` / `KIE_VIDEO_MODEL` / `COMETAPI_IMAGE_MODEL` / `COMETAPI_VIDEO_MODEL` | — (تجاوز أسماء الموديلات) |
+| `MAX_SOURCES` / `SOURCE_MAX_MB` / `OUTPUT_MAX_MB` / `MAX_TOTAL_DURATION_SEC` / `FFMPEG_PRESET` | — (حدود محرك الدمج) |
 
-## النشر على Vercel (مشروعان من نفس المستودع)
+## النشر على Vercel (مشروع واحد)
 
-### المشروع الأول: خادم MCP
 1. اربط المستودع بـ Vercel (Add New → Project) — يُكتشف Next.js تلقائيًا، اترك **Root Directory** فارغًا.
 2. أضف `TURSO_DATABASE_URL` و`TURSO_AUTH_TOKEN` في Settings → Environment Variables.
-3. Deploy — رابط MCP سيكون `https://<app>.vercel.app/mcp`، ولوحة الإدارة على الصفحة الرئيسية.
-
-### المشروع الثاني: موقع دمج الفيديوهات
-1. أضف مشروعًا ثانيًا من نفس المستودع، واضبط **Root Directory = `video-merger`**.
-2. أضف نفس متغيري Turso.
-3. Deploy — ثم انسخ دومينه وضعه في `MERGER_API_BASE` ضمن متغيرات المشروع الأول وأعد نشره.
-
-> رفع ملفات الفيديو من الواجهة يعمل بأجزاء 4MB لتجاوز حد حجم الطلب في Vercel، وتجد التوثيق الكامل للـ API بأمثلة curl في `video-merger/README.md`.
+3. Deploy — رابط MCP سيكون `https://<app>.vercel.app/mcp`، لوحة الإدارة على الصفحة الرئيسية، وصفحة الدمج على `/merge.html`.
+4. اختياري: Cron يومي للتنظيف مضبوط مسبقًا في `vercel.json` (يحذف مهام الدمج الأقدم من 24 ساعة عبر `/api/merge/cron`).
 
 ## الربط مع عملاء MCP
 
@@ -65,22 +66,13 @@
 
 الفيديو يحتاج دقائق: السيرفر يعيد `task_id` فورًا ويتابعه العميل بـ `get_task` كل 10 ثوانٍ مع بث تقدم حي (Progress notifications).
 
-## التشغيل محليًا (خادم MCP)
+## التشغيل محليًا
 
 ```bash
-bun install
-cp .env.example .env   # ثم املأ متغيري Turso
-bun run dev            # http://localhost:3000
-```
-
-اختبارات جاهزة في `scripts/` (مثل `bun run scripts/test-key-failover.ts` لاختبار التبديل التسلسلي e2e).
-
-## التشغيل محليًا (موقع الدمج)
-
-```bash
-cd video-merger
 npm install
 cp .env.example .env   # ثم املأ متغيري Turso
-node dev-server.js     # http://localhost:3040
-npm test               # 55 اختبار وحدات + HTTP
+npm run dev            # http://localhost:3000
 ```
+
+- لوحة الإدارة: `http://localhost:3000` — صفحة الدمج: `http://localhost:3000/merge.html`
+- فحص الجاهزية: `http://localhost:3000/api/health`

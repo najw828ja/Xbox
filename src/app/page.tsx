@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { Palette, Moon, Sun, Database, Zap } from "lucide-react";
+import { Palette, Moon, Sun, Database, Zap, Film } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -53,6 +53,9 @@ function Header({ dbOk, tasksTotal }: { dbOk?: boolean; tasksTotal?: number }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="hidden h-9 gap-1.5 sm:inline-flex" onClick={() => window.open("/merge.html", "_blank")}>
+            <Film className="size-4" /> دمج الفيديوهات
+          </Button>
           <Badge
             variant="outline"
             className={
