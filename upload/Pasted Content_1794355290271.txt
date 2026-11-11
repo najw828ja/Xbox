@@ -1,0 +1,584 @@
+# برومبت بناء مشروع «MCP Media Generator»
+### خادم MCP لتوليد الصور والفيديو بالذكاء الاصطناعي ودمج المقاطع + لوحة إدارة عربية
+
+> **طريقة الاستخدام:** انسخ هذا الملف كاملًا (من أول سطر لآخر سطر) وأرسله كما هو لأي نموذج ذكاء اصطناعي برمجي (Claude Code / ChatGPT / Cursor / Windsurf / GLM ...) — كل ما يحتاجه لبناء المشروع من الصفر موجود بالداخل. ستحتاج لاحقًا حساب **kie.ai** لمفتاح API، وقاعدة **Turso** مجانية.
+
+---
+
+**أيها النموذج:** أنت مهندس full-stack خبير في Next.js و TypeScript و بروتوكول MCP. ابنِ المشروع الموصوف أدناه **كاملًا من الصفر** بجودة إنتاجية، **دون أن تطرح أي أسئلة** — اتخذ القرارات المعقولة بنفسك ووثّقها بتعليقات عربية موجزة داخل الكود. اقرأ المواصفة كاملة أولًا، ثم نفّذ حسب «طريقة العمل» في نهاية البرومبت، ولا تتوقف قبل اجتياز كل «معايير القبول».
+
+---
+
+## 1) الهدف والمفهوم
+
+ابنِ **خادم MCP لتوليد الوسائط** يجمع ثلاث قدرات في أداة واحدة:
+
+1. **توليد صور** من وصف نصي — الموديل المدمج: `gpt-image-2-6/flare-text-to-image`.
+2. **توليد فيديو** مع صوت متزامن أصلي (حوار/مؤثرات/موسيقى) — الموديل المدمج: `grok-imagine-video-1-5-preview`.
+3. **دمج عدة مقاطع فيديو** في مقطع واحد عالي الجودة وبالترتيب المطلوب.
+
+المشروع تطبيق **Next.js واحد** فيه جزءان:
+
+- **خادم MCP** على المسار `/mcp` (نقل Streamable HTTP حسب مواصفات MCP) يعرض **5 أدوات** يستدعيها نموذج الذكاء الاصطناعي من أي عميل (ChatGPT Connectors / Claude Desktop / Cursor / Windsurf / Cline / GPT Agents SDK)، ويولّد الوسائط عبر مزودين خارجيين.
+- **واجهة ويب عربية RTL** لإدارة مفاتيح API، ومتابعة المهام حية، وعرض إعدادات الربط جاهزة للنسخ لأي عميل MCP.
+
+**قواعد جوهرية لا تُخرَق:**
+
+- **لا يُنزَّل أي ملف وسائط على سيرفرنا إطلاقًا** — نرسل الروابط للمزودين ونخزّن **روابط النتائج فقط** في قاعدة البيانات. الملفات تبقى على بنية المزود أو خدمة الدمج.
+- **المفاتيح تُجرَّب بترتيب تسلسلي صارم** حسب ترتيب إضافتها (أول مفتاح أُضيف يُجرَّب أولًا، ثم التالي، ثم التالي...) مع **تبديل تلقائي فوري** عند أي خطأ أو نفاد رصيد **دون توقف المهمة** — تُستأنف نفس المهمة بنفس `task_id` على المفتاح التالي، ونموذج الذكاء الاصطناعي **لا يرى أخطاء المفاتيح أو الرصيد أبدًا**.
+- التوليد غير متزامن: الأداة تعيد `task_id` فورًا (مع نافذة انتظار قصيرة تبث تقدمًا حيًا)، والعميل يتابع بأداة `get_task` كل ~10 ثوانٍ حتى الاكتمال.
+
+---
+
+## 2) التقنيات الإلزامية
+
+- **Next.js** (App Router) + **TypeScript** + **Tailwind CSS** (shadcn/ui اختياري لتسريع الواجهة).
+- **`@modelcontextprotocol/sdk`** — استخدم `McpServer` + `StreamableHTTPServerTransport` الرسميين؛ لا تكتب JSON-RPC يدويًا.
+- **`@libsql/client`** مع قاعدة **Turso** عبر HTTP — هذا إلزامي للتوافق مع Vercel (لا ملفات SQLite محلية في الإنتاج).
+- كل الـ route handlers بـ `export const runtime = "nodejs"`؛ مسار `/mcp` و `/api/health` بـ `export const dynamic = "force-dynamic"`.
+- مدير حزم كما تحب (npm / bun / pnpm).
+
+---
+
+## 3) قاعدة البيانات (Turso)
+
+أنشئ طبقة `src/lib/turso.ts`: عميل واحد `createClient({ url: process.env.TURSO_DATABASE_URL!, authToken: process.env.TURSO_AUTH_TOKEN! })`، ودالة `ensureSchema()` تُنشئ الجداول عند أول وصول (`CREATE TABLE IF NOT EXISTS`) فلا حاجة لأداة migrations، ودالة `dbHealthy()` تعمل `SELECT 1`.
+
+المخطط:
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,                -- UUID نولّده نحن (task_id الذي يراه العميل)
+  provider TEXT,                      -- kie | cometapi | merger
+  provider_task_id TEXT,              -- معرّف المهمة لدى المزود/الخدمة
+  key_id TEXT,                        -- آخر مفتاح استُخدم
+  model TEXT NOT NULL,
+  type TEXT NOT NULL,                 -- image | video | merge
+  prompt TEXT DEFAULT '',
+  params_json TEXT DEFAULT '{}',      -- كل معطيات الطلب الأصلية (لإعادة الإنشاء عند التبديل)
+  status TEXT NOT NULL,               -- pending | processing | completed | failed
+  progress INTEGER DEFAULT 0,         -- 0..100
+  result_urls_json TEXT,              -- JSON array لروابط النتائج
+  error_message TEXT,
+  attempts_json TEXT DEFAULT '[]',    -- سجل كل المحاولات: {provider,keyId,keyLabel,ok,errorClass,error,at}
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,             -- kie | cometapi
+  label TEXT DEFAULT '',
+  api_key TEXT NOT NULL,
+  status TEXT DEFAULT 'active',       -- active | exhausted | disabled
+  usage_count INTEGER DEFAULT 0,
+  success_count INTEGER DEFAULT 0,
+  fail_count INTEGER DEFAULT 0,
+  last_used_at TEXT,
+  last_checked_at TEXT,
+  last_error TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+```
+
+عمليات المهام المطلوبة: `insertTask`, `getTask`, `updateTask` (patch جزئي يضيف attempts ويضبط `completed_at` تلقائيًا عند الاكتمال), `listRecentTasks(limit, {type,status})`, `taskStats()` (إجمالي/مكتملة/فاشلة/جارية).
+
+---
+
+## 4) نظام المفاتيح المتسلسلة (قلب المشروع)
+
+### 4.1 الترتيب الصارم
+
+`getKeyPool(providers)` تجلب كل المفاتيح غير المعطّلة لهذه المزودات **بهذا الترتيب بالضبط**:
+
+```sql
+SELECT * FROM api_keys
+WHERE status != 'disabled' AND provider IN (?, ?)
+ORDER BY created_at ASC, id ASC
+```
+
+- **أول مفتاح أُضيف يُجرَّب أولًا، ثم الثاني، ثم الثالث...** — هذا ترتيب تسلسلي مقصود، **ليس** round-robin وليس «الأقل استخدامًا أولًا».
+- المفتاح المستنزف رصيده (`exhausted`) **يبقى في القائمة والقاعدة** ولا يُستبعد — الاستثناء الوحيد هو التعطيل اليدوي من الواجهة (`disabled`).
+
+### 4.2 تصنيف الأخطاء (دالة موحدة `classifyProviderError`)
+
+| الفئة | الشرط | الإجراء |
+|---|---|---|
+| `disabled` | HTTP 401/403 أو رسالة `invalid api key / unauthorized / forbidden / authentication` | المفتاح مرفوض → علّمه `disabled` تلقائيًا → انتقل للمفتاح التالي |
+| `exhausted` | HTTP 402 أو رسالة `insufficient / quota / balance / credit / out of credits / exhausted / 充值` (افحصها **قبل** 400 لأن بعض المزودين يرسلون نفاد الرصيد بحالة 400) | علّم المفتاح `exhausted` (يبقى في القاعدة) → انتقل للتالي |
+| `provider` | رسالة `model not found / unsupported model` مع 400/404/422 | الموديل غير مدعوم لدى هذا المزود → انتقل للتالي |
+| `params` | 400/422 (معطيات الطلب) | **توقف فورًا** — تبديل المفاتيح لن يحل خطأ معطيات |
+| `temporary` | 429، 5xx، انقطاع شبكة، timeout، abort | انتقل للتالي الآن (والمفتاح يبقى سليمًا) |
+
+### 4.3 سلوك التبديل «لا توقف أبدًا»
+
+1. عند إنشاء مهمة: جرّب المرشحين **بالترتيب**؛ أول نجاح يربط المهمة بالمزود والمفتاح. كل محاولة (نجاح أو فشل + الفئة) تُسجَّل في `attempts_json`، وعدّادات المفتاح (`usage_count`, `success_count`, `fail_count`, `last_error`) تُحدَّث دائمًا.
+2. **فشل في منتصف المهمة** (المزود أعلن الفشل ورسالته تطابق نمط مشكلات مفتاح/رصيد مثل `insufficient|balance|credit|quota|402|401|unauthorized`): أعد إنشاء **نفس المهمة بنفس `task_id`** على المفتاح التالي تلقائيًا واستمر — العميل يرى «قيد المعالجة» فقط ولا يعلم بحدوث أي تبديل.
+3. إذا فشل الإنشاء على **كل** المفاتيح: المهمة تبقى بحالة **`processing`** (وليست failed) برسالة داخلية «بانتظار توفر مفتاح صالح…»، وتُعاد المحاولة تلقائيًا مع **كل استدعاء `get_task`** (بعد فترة تهدئة ~45 ثانية حتى لا نضغط المزودين). بهذا لو شحن المستخدم رصيد أي مفتاح تكتمل المهمة من تلقاء نفسها.
+4. **نموذج الذكاء الاصطناعي لا يرى أبدًا** خطأ مفتاح أو رصيد — لا رسائل فشل تُذكر بهما تخرج من السيرفر للعميل أبدًا.
+
+### 4.4 إدارة المفاتيح (API للواجهة)
+
+- `GET /api/keys` — القائمة كاملة **مع إخفاء المفاتيح دائمًا**: `maskKey` = أول 7 أحرف + `••••••••` + آخر 4 (للمفاتيح القصيرة: أول 3 + `••••`). لا يُعاد المفتاح الكامل في أي استجابة.
+- `POST /api/keys` `{provider, api_key, label?}` مع رفض التكرار لنفس المزود.
+- `PATCH /api/keys/{id}` تعطيل/تنشيط يدوي، و `DELETE /api/keys/{id}` حذف.
+
+---
+
+## 5) سجل الموديلات والمزودون
+
+### 5.1 سجل MODELS (`src/lib/models.ts`)
+
+```ts
+type ProviderId = "kie" | "cometapi";
+type TaskProvider = ProviderId | "merger";
+type MediaType = "image" | "video" | "merge";
+
+interface ModelDef {
+  canonical: string;          // الاسم كما يراه عميل MCP
+  aliases: string[];          // صيغ بديلة نقبلها ونوحدّها (شرطات/نقاط)
+  type: MediaType;
+  providers: ProviderId[];    // من يستطيع خدمته — تُجرَّب مفاتيحهم كلها بالترتيب
+  providerModel: Record<ProviderId, string>; // اسم الموديل كما يُرسل لكل مزود
+}
+```
+
+الموديلان المدمجان (مثبّتان كما هما):
+
+| canonical | النوع | providers | providerModel |
+|---|---|---|---|
+| `gpt-image-2-6/flare-text-to-image` | image | kie, cometapi | kie: `gpt-image-2-6/flare-text-to-image` — cometapi: `gpt-image-2.6-flare-text-to-image` |
+| `grok-imagine-video-1-5-preview` | video | kie, cometapi | `grok-imagine-video-1-5-preview` للاثنين |
+
+اقبل الصيغ البديلة بالنقاط (`gpt-image-2.6/...`, `grok-imagine-video-1.5-preview`) ونوّحدها. اجعل الأسماء قابلة للتجاوز بمتغيرات بيئة (`KIE_IMAGE_MODEL`, `KIE_VIDEO_MODEL`, `COMETAPI_IMAGE_MODEL`, `COMETAPI_VIDEO_MODEL`).
+
+### 5.2 واجهة المزودات (`src/lib/providers/`)
+
+```ts
+interface ProviderAdapter {
+  // مهمة غير متزامنة (فيديو، وبعض الصور): تعيد providerTaskId
+  createTask(key, model, input): Promise<{ providerTaskId: string }>;
+  // صور متزامنة إن كان المزود يدعمها (CometAPI تعيد النتيجة فورًا)
+  createImageSync?(key, input): Promise<{ urls: string[] }>;
+  // استعلام حالة مهمة جارية
+  checkTask(key, providerTaskId): Promise<{ status: "processing"|"completed"|"failed"; urls?: string[]; error?: string; progress?: number }>;
+}
+```
+
+أي خطأ يُرمى كـ `ProviderError { status, message }` ليُصنَّف في جدول 4.2.
+
+**kie.ai** (المزود الأساسي) — Jobs API الموحد:
+
+```
+POST https://api.kie.ai/api/v1/jobs/createTask
+  Authorization: Bearer <key>
+  {"model": "<providerModel>", "input": { ...prompt/image_url/aspect_ratio/... }}
+  → {"code":200,"data":{"taskId":"..."}}
+
+GET https://api.kie.ai/api/v1/jobs/recordInfo?taskId=<id>
+  → {"code":200,"data":{"state":"waiting|queuing|generating|success|fail",
+       "resultJson":"{\"resultUrls\":[\"https://...\"]}",   // نص JSON داخل JSON
+       "failMsg":"..."}}
+```
+
+(انتبه: `resultJson` **نص** يحتاج `JSON.parse` ثانيًا. إذا تغيّر الشكل لاحقًا فاتبع توثيق docs.kie.ai الرسمي — لا تخترع حقولًا.)
+
+**CometAPI** (المزود الثاني): صور متزامنة عبر نقطة images المتوافقة مع OpenAI تعيد الرابط/`b64_json` فورًا، والفيديو عبر نقطة المهام غير المتزامنة بنفس نمط create/check. اتبع توثيق api.cometapi.com الحالي عند التنفيذ.
+
+---
+
+## 6) منسّق التوليد (`runGeneration`)
+
+التدفق لأداة `generate_image` / `generate_video`:
+
+1. وحّد اسم الموديل عبر aliases — غير معروف → خطأ معطيات فوري.
+2. `getKeyPool(providers الموديل)` — فارغ → رد `no_keys`: «❌ لا توجد مفاتيح نشطة لخدمة <model>. أضف مفتاحًا واحدًا على الأقل من واجهة الإدارة، ثم أعد المحاولة.»
+3. سجّل المهمة في Turso **قبل** أي نداء خارجي (حتى لو انقطع الاتصال تبقى قابلة للتتبع).
+4. جرّب المرشحين بالترتيب (قسم 4.3) حتى نجاح الإنشاء.
+5. أثناء نافذة الانتظار `wait_seconds` (0–240 ثانية؛ الافتراضي 90 للصور و25 للفيديو): استعلم `checkTask` كل 3 ثوانٍ وأرسل **progress notifications** (~كل 3 ثوانٍ، رسالة عربية مثل «قيد التوليد… 45%» مع `progress/total/percent`).
+6. اكتمل → خزّن `result_urls_json` والحالة `completed` و progress=100 و return للمهمة المكتملة. فشل حقيقي (انتهاك سياسة/معطيات) → `failed`. فشل مفتاح/رصيد → أعد الإنشاء على المفتاح التالي بنفس `task_id` (قسم 4.3.2).
+7. انتهت النافذة والنتيجة لم تظهر → أعد المهمة بحالة `processing` مع `task_id` والعميل يتابع بـ `get_task`.
+
+`get_task` يستدعي `refreshTask(taskId)`: المهمة الجارية تُحدَّث حية من المزود (أو من خدمة الدمج)، مع نفس منطق إعادة المحاولة/التبديل أعلاه، ثم تُرجَع صياغة عربية جاهزة للعرض.
+
+---
+
+## 7) خدمة دمج الفيديو — Video Merger API v2
+
+العميل في `src/lib/merger.ts`. العنوان من `MERGER_API_BASE` (الافتراضي `https://xxxxxxxx`). **بلا مفاتيح أو توثيق.** المخرجات: MP4 (H.264 + AAC) حتى 1080p بجودة CRF 18. **لا توجد معاملات resolution/fps — الناتج ثابت.**
+
+القيود: **10 مقاطع كحد أقصى**، 200MB لكل رابط مصدر، 150MB لحجم الناتج، 600 ثانية مجموع مدد المقاطع. **كل الملفات تُحذف تلقائيًا بعد 24 ساعة** (`expiresAt` في الاستجابات).
+
+### 7.1 نقاط النهاية (أشكال حقيقية مقاسة)
+
+```
+POST /api/jobs
+  Body: {"videos": ["https://.../clip1.mp4", "https://.../clip2.mp4"]}
+  200 → {"jobId":"wkucdefoxwvd","status":"queued",
+         "statusUrl":".../api/jobs/wkucdefoxwvd",
+         "processUrl":".../api/jobs/wkucdefoxwvd/process","expiresAt":"..."}
+
+POST /api/jobs/{jobId}/process
+  يستغرق ~10–15 ثانية (blocking).
+  نجاح 200 → {"status":"done","videoUrl":"https://xxxxxxxxxxx/{id}/video",
+              "downloadUrl":".../api/jobs/{id}/video?download=1",
+              "size":1234567,"duration":30.2,"resolution":"640x360","expiresAt":"..."}
+  فشل → HTTP 500 + {"error":"Download failed (HTTP 403)"}
+        (مثل مصدر يرفض التحميل — فشل حتمي: تكرار المحاولة يعطي النتيجة نفسها)
+
+GET /api/jobs/{jobId}
+  → {"status":"queued|done|failed","progress":0..100,
+     "videoUrl":"...","downloadUrl":"...","error":"..."}
+  انتبه: قد يرد الجسم فيه error بدون حقل status → عاملها failed فورًا.
+
+GET /api/jobs/{jobId}/video?download=1
+  يُرجع ملف MP4 مباشرةً (يدعم Range). استخدمه رابط نتيجة إذا لم يوجد videoUrl/downloadUrl.
+
+DELETE /api/jobs/{jobId}   → حذف فوري (تنظيف اختياري)
+GET  /api/config           → حدود الخدمة الحالية (تُستخدم لفحص الجهوزية)
+```
+
+### 7.2 تحليل الحالة (دفاعي)
+
+- أكمل: `done|completed|complete|success|succeeded|finished` — فشل: `error|failed|failure|cancelled`.
+- `progress` يأتي أحيانًا كسرًا 0..1 → اضربه في 100.
+- رابط النتيجة: فضّل `videoUrl` ثم `downloadUrl`، وإن غابا وبقي `jobId` فاضبط: `${MERGER_BASE}/api/jobs/{id}/video`.
+
+### 7.3 تدفق `runMerge` وقواعده
+
+1. تحقق صارم: بعد جمع الروابط يجب أن تكون ≥2 وكلها `http/https` مباشرة وعامة؛ **>10 → رفض**: «❌ أقصى عدد مقاطع للدمج هو 10 (خدمة الدمج تقبل 10 مقاطع كحد أقصى).»
+2. سجّل مهمة `type="merge", provider="merger", model="video-merger"` في Turso **أولًا**.
+3. `POST /api/jobs` ثم أطلق **خلفيًا وبمرة واحدة فقط** `POST .../process` (احمِه بقفل في الذاكرة `processInFlight: Set<string>` حتى لا يتزامن مع `get_task`).
+4. حتى نهاية نافذة الانتظار (افتراضي 60 ثانية): استعلم `GET /api/jobs/{id}` كل 3 ثوانٍ مع بث تقدم. تحديث الحالة يُكتب في Turso فورًا كل مرة.
+5. **قاعدة حتمية:** أي خطأ HTTP معلن من الخدمة (4xx/5xx بجسم error) = **فشل نهائي فوري** — لا إعادة محاولة. أخطاء شبكتنا نحن (timeout/fetch) = مؤقتة → استمر بالاستعلام حتى انتهاء النافذة.
+6. `get_task` لمهمة دمج (`refreshMergeTask`): حدّث من `GET /api/jobs/{id}`؛ إن كانت processing ولم يُنفَّذ process بعد فنفّذه الآن؛ وإن ردت الخدمة **404** → فشل نهائي: «مهمة الدمج غير موجودة في الخدمة (حُذفت أو انتهت صلاحيتها بعد 24 ساعة)».
+
+---
+
+## 8) خادم MCP والمسار `/mcp`
+
+`src/app/mcp/route.ts` — `runtime="nodejs"`, `dynamic="force-dynamic"`. استخدم SDK رسميًا: `McpServer` + `StreamableHTTPServerTransport` داخل الـ route handler (POST لرسائل JSON-RPC، DELETE لإنهاء الجلسة). إذا ضُبط `MCP_ACCESS_TOKEN` فاطلب `Authorization: Bearer <token>` على `/mcp` (وأظهر ذلك في الواجهة والـ health).
+
+- `SERVER_INFO = { name: "media-generator-mcp", version: "1.2.0" }`.
+- سجّل الأدوات الخمس بأوصافها الإنجليزية الدقيقة أدناه (العميل يقرأها) — أما **نتائج الاستدعاء فتُصاغ بالعربية**.
+
+**SERVER_INSTRUCTIONS** (نص جاهز يُرسل مع initialize):
+
+```
+AI media generation server (kie.ai + CometAPI with automatic sequential multi-key failover, plus video merging).
+Workflow: call generate_image or generate_video. If the response contains finished URLs, show them to the user.
+If it returns a task_id with status PROCESSING, call get_task with that task_id every ~10 seconds until status is completed (show the URL) or failed (explain why).
+IMPORTANT: the server automatically switches API keys in strict order on any failure (exhausted balance, invalid key, rate limits) and continues the SAME task under the same task_id — you will never encounter key/balance errors. Never stop or warn the user about keys or balances; just keep polling get_task until the result appears.
+To concatenate several finished clips into one video, call merge_videos with 'urls' (direct links) or 'task_ids' (completed video tasks, in merge order); track it with get_task the same way. Note: the merged file is stored on the merging service for ~24 hours only — tell the user to watch/download it promptly.
+Use list_media to recall previously generated media from the database.
+```
+
+### الأدوات الخمس
+
+**1) `generate_image`** — الوصف: توليد صورة بـ `gpt-image-2-6/flare-text-to-image` (تبديل تلقائي عبر كل المفاتيح النشطة). تعيد رابط الصورة جاهزًا إذا اكتملت خلال نافذة الانتظار، وإلا تعيد `task_id` — استدعِ `get_task` كل ~10 ثوانٍ حتى completed ثم اعرض الرابط وتوقف.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "prompt":        { "type": "string", "minLength": 1, "description": "What to draw. Detailed prompts give better results." },
+    "model":         { "type": "string", "enum": ["gpt-image-2-6/flare-text-to-image", "gpt-image-2.6/flare-text-to-image"], "default": "gpt-image-2-6/flare-text-to-image" },
+    "aspect_ratio":  { "type": "string", "enum": ["auto","1:1","3:2","2:3","4:3","3:4","5:4","4:5","16:9","9:16","2:1","1:2","21:9","9:21","3:1","1:3"], "default": "auto" },
+    "resolution":    { "type": "string", "enum": ["1K","2K","4K"], "default": "1K" },
+    "background":    { "type": "string", "enum": ["auto","transparent","opaque"], "default": "auto", "description": "Only applied at 1K." },
+    "output_format": { "type": "string", "enum": ["png","jpeg","webp","gif"], "default": "png" },
+    "wait_seconds":  { "type": "integer", "minimum": 0, "maximum": 240, "default": 90 }
+  },
+  "required": ["prompt"]
+}
+```
+
+**2) `generate_video`** — الوصف: توليد فيديو بـ `grok-imagine-video-1-5-preview` (صوت متزامن أصلي، image-to-video اختياري). الفيديو يحتاج دقائق: انتظار قصير مع بث تقدم ثم `task_id` — تابع بـ `get_task` كل ~10 ثوانٍ.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "prompt":       { "type": "string", "maxLength": 4096, "description": "Scene description. Dialogue in the prompt is spoken in the video." },
+    "image_url":    { "type": "string", "description": "Optional public image URL as the first frame (image-to-video)." },
+    "model":        { "type": "string", "enum": ["grok-imagine-video-1-5-preview", "grok-imagine-video-1.5-preview"], "default": "grok-imagine-video-1-5-preview" },
+    "aspect_ratio": { "type": "string", "enum": ["auto","1:1","16:9","9:16","3:2","2:3"], "default": "auto" },
+    "resolution":   { "type": "string", "enum": ["480p","720p","1080p"], "default": "480p" },
+    "enable_audio": { "type": "boolean", "default": true },
+    "duration":     { "type": "integer", "minimum": 1, "maximum": 15, "default": 8, "description": "Duration in seconds." },
+    "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 240, "default": 25 }
+  },
+  "required": ["prompt"]
+}
+```
+
+**3) `merge_videos`** — الوصف: دمج عدة مقاطع في **فيديو واحد نهائي بالترتيب المعطى**. مرر `urls` (روابط فيديو مباشرة عامة — مثل روابط `generate_video`) أو `task_ids` (لمهام فيديو مكتملة تُحل روابطها من قاعدة البيانات بالترتيب — مثالي بعد توليد عدة مقاطع). الدمج سريع عادةً: انتظار قصير مع بث تقدم ثم `task_id` للدمج — تابعه بـ `get_task`. **ملاحظة تُذكر في الوصف حرفيًا:** "the merged file is stored on the merging service for ~24 hours only — tell the user to watch/download it promptly."
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "urls":         { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 10, "description": "Public direct video URLs (http/https) in merge order — the first clip starts the final video." },
+    "task_ids":     { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 10, "description": "Alternative to urls: task_ids of COMPLETED video generation tasks — their result URLs are merged in this order." },
+    "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 240, "default": 60 }
+  }
+}
+```
+
+(الترتيب: روابط `task_ids` أُولًا ثم `urls` المباشرة بنفس ترتيبها. لا توجد resolution/fps — خدمة الدمج تثبّت المخرج.)
+
+**4) `get_task`** — الوصف: تتبع أي مهمة بمعرّفها — توليد صور/فيديو **و**دمج (يقرأ قاعدة Turso ويحدّث من المزود/الخدمة إن كانت جارية). استعلمه كل ~10 ثوانٍ؛ عند completed ستجد روابط النتائج — اعرضها للمستخدم وتوقف عن الاستعلام.
+
+```json
+{ "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] }
+```
+
+**5) `list_media`** — الوصف: أحدث الصور/الفيديوهات/الدمجات المخزنة بروابطها من قاعدة البيانات (بدون إعادة توليد) — لاسترجاع نتائج سابقة.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "type":   { "type": "string", "enum": ["image","video","merge"] },
+    "status": { "type": "string", "enum": ["completed","failed","processing"] },
+    "limit":  { "type": "integer", "minimum": 1, "maximum": 50, "default": 10 }
+  }
+}
+```
+
+### صياغة الردود (عربية)
+
+- مكتملة صورة: `✅ تم توليد الصورة بنجاح` ثم `![image](<الرابط>)` ثم `الرابط المباشر: <الرابط>`.
+- مكتملة فيديو/دمج: `✅ تم توليد الفيديو بنجاح` / `✅ تم دمج المقاطع بنجاح` + الروابط المباشرة. **لمهام الدمج أضف:** «⚠️ ملف الدمج يُحذف من خدمة الدمج بعد ~24 ساعة — شاهده/نزّله سريعًا.»
+- جارية: `⏳ المهمة قيد المعالجة — task_id: <id>` + `تابع بـ get_task كل ~10 ثوانٍ حتى تكتمل.`
+- فاشلة: `❌ فشلت المهمة: <السبب>` مع `isError: true`.
+- دمج بأقل من مقطعين: `❌ الدمج يحتاج مقطعَين على الأقل. مرّر urls (روابط مباشرة) أو task_ids لمهام مكتملة.` + تفاصيل كل معرّف فاشل.
+- أداة مجهولة: `❌ أداة غير معروفة: <name>. المتاح: ...`
+
+أثناء نافذة الانتظار أرسل **progress notifications** (إذا زوّد العميل الطلب بـ `_meta.progressToken`): كل ~3 ثوانٍ `{progress, total, message}` برسالة عربية.
+
+---
+
+## 9) واجهة الويب العربية (RTL)
+
+`layout` بـ `dir="rtl"` و `lang="ar"` وخط عربي جيد. صفحة واحدة (Dashboard) فيها هيدر يعرض حالة `/api/health` (شارة «Turso متصل» خضراء / «غير متصل» حمراء) وثلاث بطاقات:
+
+**أ) مدير المفاتيح**
+- نموذج إضافة: اختيار المزود (`kie.ai` / `CometAPI`) + تسمية اختيارية + المفتاح. رفض التكرار.
+- قائمة المفاتيح: مُقنَّع دائمًا (`ABCD123••••••••WXYZ`)، شارة حالة ملونة (`active` أخضر / `exhausted` كهرماني / `disabled` رمادي)، عدّادات الاستخدام/النجاح/الفشل، آخر خطأ، أزرار تعطيل–تنشيط وحذف.
+- نص توضيحي ثابت أعلى القائمة: «أضف عدة مفاتيح لكل مزود — التجربة تسلسلية (أول مفتاح ثم التالي ثم التالي) مع تبديل فوري تلقائي عند أي خطأ أو نفاد رصيد دون توقف.»
+
+**ب) لوحة المهام**
+- شرائح إحصائيات: إجمالي / مكتملة / فاشلة / جارية.
+- قائمة أحدث المهام تتحدث تلقائيًا كل ~5 ثوانٍ: نوع المهمة، شارة الحالة، شريط تقدم، الموديل، مقتطف الوصف، وقت الإنشاء، أزرار فتح الروابط عند الاكتمال، رسالة الخطأ عند الفشل، وعدد المحاولات.
+
+**ج) ربط السيرفر**
+- حقل للرابط المطلق `<origin>/mcp` بزر نسخ.
+- تبويبات ثلاث تعرض JSON جاهزًا للنسخ:
+  - ChatGPT / GPT Agents: `{"mcpServers":{"media-generator":{"url":"<MCP_URL>"}}}` (+ `headers.Authorization` إذا ضُبط `MCP_ACCESS_TOKEN`) مع سطر: في ChatGPT: Settings → Connectors → Create → Custom MCP server وضع الرابط في «Server URL».
+  - Claude Desktop: نفس الصيغة مع `"type": "http"` للملف `claude_desktop_config.json`.
+  - Cursor / Windsurf / Cline: نفس صيغة mcp.json.
+- رقائق (chips) تعرض الأدوات الخمس مع وصف عربي سطر واحد لكل أداة.
+- ملاحظة كهرمانية: «الفيديو يحتاج دقائق: يعيد السيرفر task_id فورًا، ويتابَع تلقائيًا بـ get_task كل 10 ثوانٍ — وعند اكتمال المهمة يُعرض الرابط في الدردشة ويتوقف. أثناء الانتظار يُبَث تقدم حي (Progress notifications) حتى لا تنقطع العملية.»
+
+**`GET /api/health`** — يُرجع:
+
+```json
+{
+  "ok": true,
+  "database": "turso-connected",
+  "mcpEndpoint": "/mcp",
+  "models": [
+    { "canonical": "gpt-image-2-6/flare-text-to-image", "type": "image", "providers": ["kie","cometapi"] },
+    { "canonical": "grok-imagine-video-1-5-preview", "type": "video", "providers": ["kie","cometapi"] }
+  ],
+  "merger": { "base": "https://xxxxxxxxxx", "healthy": true },
+  "authRequired": false
+}
+```
+
+(`merger.healthy` = فحص `GET {MERGER_API_BASE}/api/config` بمهلة 4 ثوانٍ.)
+
+---
+
+## 10) متغيرات البيئة والنشر على Vercel
+
+```bash
+# .env.local محليًا — ونفس القيم في Vercel → Settings → Environment Variables
+TURSO_DATABASE_URL=turso://<db-name>-<org>.turso.io
+TURSO_AUTH_TOKEN=<Turso token بصلاحيات كتابة>
+MERGER_API_BASE=https://xxxxxxxxxx
+
+# اختياري
+MCP_ACCESS_TOKEN=            # إن ضُبط يُطلب Bearer token على /mcp
+KIE_IMAGE_MODEL=             # تجاوز أسماء الموديلات إن لزم
+KIE_VIDEO_MODEL=
+COMETAPI_IMAGE_MODEL=
+COMETAPI_VIDEO_MODEL=
+```
+
+- إنشاء قاعدة Turso مجانية: `turso db create <name>` ثم `turso db show <name> --url` و `turso db tokens create <name>`.
+- **`.env*` في `.gitignore` منذ اليوم الأول** — لا يُرفع أي سر إلى Git إطلاقًا، ولا تُطبع مفاتيح كاملة في الردود أو السجلات.
+- على Vercel: اربط المستودع → أضف المتغيرات الثلاثة → Deploy. يعمل كل شيء لأن libSQL يتصل عبر HTTP ومناسب للـ serverless، ومسار `/mcp` يدعم الـ streaming. لا تعتمد على أي ملف محلي.
+
+---
+
+## 11) قواعد ذهبية إلزامية
+
+1. روابط فقط — لا تنزيل أي وسائط إلى السيرفر أبدًا.
+2. ترتيب المفاتيح تسلسلي صارم بترتيب الإضافة (`created_at ASC, id ASC`) — لا round-robin.
+3. لا توقف عند نفاد رصيد: انتقال تلقائي للمفتاح التالي واستئناف نفس المهمة بنفس `task_id`.
+4. نموذج الذكاء الاصطناعي لا يرى أخطاء مفاتيح/رصيد أبدًا — التبديل صامت تمامًا من وجهة نظره.
+5. مهمة فشلت على كل المفاتيح تبقى `processing` وتُعاد محاولتها تلقائيًا مع كل `get_task` (بتهدئة ~45 ثانية).
+6. أخطاء خدمة الدمج المعلنة (HTTP 4xx/5xx) = فشل حتمي فوري؛ أخطاء شبكتنا = مؤقتة وتستمر بالاستعلام.
+7. ملفات الدمج تُحذف بعد 24 ساعة — مذكورة في وصف الأداة وفي SERVER_INSTRUCTIONS ليُنبّه النموذج المستخدم للتنزيل سريعًا.
+8. كل رسائل الأدوات والواجهة بالعربية (المصطلحات التقنية وأسماء الأدوات تبقى بالإنجليزية).
+9. إخفاء المفاتيح إلزامي في كل الاستجابات والسجلات (`maskKey`).
+10. لا تخترع أشكال APIs: اختبرها فعليًا بـ curl أو اتبع التوثيق الرسمي للمزود.
+11. لا أسرار في الكود أو Git — `.env*` مُستثنى منذ أول commit.
+
+---
+
+## 12) معايير القبول — لا تعلن الإنجاز قبل اجتيازها كلها
+
+1. `tsc --noEmit` نظيف و `next build` ينجح بدون أخطاء.
+2. `GET /api/health` يرجع `ok:true` و `database:"turso-connected"` و `merger.healthy:true`.
+3. `tools/list` على `/mcp` يعرض الأدوات الخمس بمخططات مطابقة لهذا البرومبت (merge بدون resolution/fps وبحد 10).
+4. اختبار e2e حقيقي لتوليد صورة بمفتاح صحيح → رابط صورة يعمل (مباشرة أو عبر get_task).
+5. اختبار e2e حقيقي لتوليد فيديو → `task_id` يتابعه `get_task` كل 10 ثوانٍ حتى رابط فيديو صالح.
+6. اختبار التبديل التسلسلي: أضف مفتاحًا **خاطئًا أولًا** ثم مفتاحًا صحيحًا → نفس المهمة تكتمل على الثاني، الخاطئ صار `disabled`، ولم يصل العميل أي ذكر للمفاتيح أو الرصيد.
+7. مفتاح مستنزف (402) يظهر بحالة `exhausted` ويبقى في القاعدة دون عرقلة المفاتيح التالية.
+8. اختبار e2e حقيقي للدمج بمقطعين عامين (مثلًا `https://www.w3schools.com/html/mov_bbb.mp4` و `https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4`) → رابط MP4 نهائي على نطاق خدمة الدمج يعمل ويُشغَّل، والرابط لا يحتوي أي نطاق داخلي غير عام.
+9. `merge_videos` يرفض مقطعًا واحدًا وأكثر من 10 برسائل عربية الصحيحة، ويحل `task_ids` بالترتيب.
+10. `list_media` يعيد المهام المخزنة بروابطها ومرتبة من الأحدث.
+11. الواجهة: إضافة/تعطيل/حذف مفتاح تعمل، لوحة المهام تتحدث تلقائيًا، بطاقة الربط تعرض الرابط و JSON الصحيح لكل تبويب، وكل الصفحة RTL عربية سليمة.
+12. نشر تجريبي (أو محاكاة كاملة لبيئة Vercel بمتغيرات الإنتاج فقط) يثبت أن `/mcp` و `/api/health` والواجهة تعمل بدون أي ملف محلي.
+
+نظّف آثار الاختبار بعد الانتهاء (احذف مهام الاختبار من قاعدة البيانات، واستخدم `DELETE /api/jobs/{id}` لخدمة الدمج إن وجدت).
+
+---
+
+## 13) طريقة العمل المطلوبة منك (أيها النموذج)
+
+1. **البنية أولًا:** أنشئ تطبيق Next.js (App Router + TypeScript + Tailwind)، ثبّت `@modelcontextprotocol/sdk` و `@libsql/client`، وطبّق RTL من أول لحظة.
+2. **الترتيب:** طبقة Turso والمخطط ← طبقة المفاتيح والتصنيف ← المزودان وسجل MODELS ← منسّق التوليد بالتبديل التسلسلي ← عميل الدمج v2 ← أدوات MCP ومسار `/mcp` ← الواجهة الثلاثية و `/api/health` ← الاختبارات.
+3. **اختبر كل مرحلة فورًا** بخادم تشغيل مستمر و curl — مثال اختبار MCP:
+
+```bash
+# تهيئة جلسة
+curl -s -X POST http://localhost:3000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl-test","version":"1.0"}}}'
+
+# قائمة الأدوات (أرسل notifications/initialized أولًا ثم:)
+curl -s -X POST http://localhost:3000/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -H 'mcp-session-id: <من استجابة التهيئة>' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# استدعاء أداة
+curl -s -X POST http://localhost:3000/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -H 'mcp-session-id: <نفس الجلسة>' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_media","arguments":{}}}'
+```
+
+4. لا تخترع أشكال استجابات المزودين — جرّبها بنداءات حقيقية صغيرة أولًا، وإذا اختلف الشكل عن هذا البرومبت فالتزم بالشكل الحقيقي المقاس.
+5. اكتب تعليقات عربية موجزة تشرح كل قرار مهم (خاصة سياسة التبديل والدمج).
+6. **لا تتوقف ولا تسأل** قبل اجتياز معايير القبول الاثني عشر كاملة، ثم سلّم ملخصًا: ما بُني، كيف يُشغَّل، وما المتغيرات المطلوبة على Vercel.
+
+---
+
+## 14) موقع دمج الفيديوهات على Vercel (البرومبت الثاني الكامل)
+
+المهمة: ابنِ لي موقعًا كاملًا لدمج الفيديوهات مع واجهة برمجية عامة (API) للمطورين، جاهزًا للنشر على Vercel، مطابقًا للمواصفات التالية بالتفصيل
+
+### 1) التقنيات المطلوبة (إلزامي — لا تغيّرها)
+
+- Node.js خالص (CommonJS) بدون Next.js أو React أو أي خطوة بناء: واجهة ثابتة (HTML + CSS + JS داخل ملف واحد) في `public/` + دوال Vercel Serverless في `api/`.
+- Turso (libSQL) عبر `@libsql/client`: تُخزَّن فيها كل شيء — بيانات المهام، أجزاء ملفات المصادر، والفيديو الناتج (Blobs). لا S3 ولا خدمات خارجية.
+- `ffmpeg-static` + `ffprobe-static`: معالجة الفيديو داخل الدالة نفسها.
+- ملف `.env` يُحمَّل يدويًا + خادم تطوير محلي يحاكي بيئة Vercel (يحلّل المسارات الديناميكية ويضعها في `req.query`).
+
+### 2) واجهة الموقع (عربية RTL، ثيم داكن حديث بتدرجات سماوي/بنفسجي)
+
+- حقل لإضافة رابط فيديو مباشر + زر إضافة، ويقبل عدة روابط.
+- منطقة سحب وإفلات لرفع ملفات فيديو من الجهاز (mp4/mov/webm/mkv/avi/m4v/mpg/3gp).
+- قائمة المصادر قابلة لإعادة الترتيب بالسحب أو أزرار ↑↓ مع زر حذف لكل عنصر — ترتيب القائمة = ترتيب الدمج، ويظهر ترقيم واضح.
+- زر «دمج الفيديوهات» ينفذ التدفق كاملًا تلقائيًا: إنشاء مهمة → رفع أجزاء الملفات → تنفيذ الدمج → عرض النتيجة، مع شريط تقدم حقيقي يُحدَّث من تقدم الخادم، وإعادة محاولة تلقائية لأي جزء رفع يفشل.
+- صفحة النتيجة: مشغل فيديو، الحجم والمدة والدقة، زر تحميل، زر نسخ الرابط، زر «عملية جديدة»، وعدّاد تنازلي للوقت المتبقي حتى انتهاء الصلاحية (24 ساعة).
+- قسم «توثيق API» قابل للطي داخل الصفحة، فيه جدول بالنقاط وأمثلة curl جاهزة للنسخ بالدومين الحقيقي.
+- استئناف العرض بعد تحديث الصفحة عبر `#job=<id>` (لو المهمة done يعرض النتيجة مباشرة، ولو processing يتابع الاستطلاع).
+
+### 3) واجهة API العامة (بدون تسجيل دخول، CORS مفتوح، الأخطاء بصيغة {"error":"..."})
+
+| Method | Endpoint | الوظيفة |
+|---|---|---|
+| `POST` | `/api/jobs` | إنشاء مهمة دمج |
+| `POST` | `/api/upload?job=<id>&seq=<n>&chunk=<k>` | رفع أجزاء الملفات (ثنائي ≤4MB) |
+| `POST` | `/api/jobs/<id>/process` | تنفيذ الدمج كاملًا → رابط الفيديو النهائي |
+| `GET` | `/api/jobs/<id>` | الحالة + التقدم (0–100) + الرابط عند الاكتمال |
+| `GET` | `/api/jobs/<id>/video` | بث الناتج بدعم Range، و`?download=1` للتحميل |
+| `DELETE` | `/api/jobs/<id>` | حذف فوري شامل |
+| `GET` | `/api/config` | الحدود العامة + version |
+| `GET` | `/api/cron` | حذف المهام المنتهية (Cron يومي) |
+
+- `POST /api/jobs` يقبل `{"videos":["رابط1","رابط2"]}` أو `{"sources":[{"kind":"url","url":...},{"kind":"file","name":...,"size":...,"mime":...}]}` → يرجع `201`:
+
+  ```json
+  {"jobId":"...","status":"queued"|"uploading","statusUrl":"...","processUrl":"...","expiresAt":"..."}
+  ```
+
+  وإن وُجدت ملفات يرجع `uploads[]` برابط رفع لكل مصدر + `uploadChunkBytes`.
+
+- `POST /api/jobs/<id>/process` متزامن: ينزّل/يسحب المصادر ← يرمّز ← يحفظ، ويرجع مباشرة:
+
+  ```json
+  {"status":"done","videoUrl":"https://.../api/jobs/<id>/video","downloadUrl":"...?download=1","size":...,"duration":...,"resolution":"WxH","expiresAt":"..."}
+  ```
+
+  لو المهمة قيد المعالجة فعله يرجع `202`.
+
+- حالات المهمة: `queued` → (`uploading`) → `processing` → `done` | `failed`، مع عمود `progress`.
+- رفض الطلبات برسائل عربية واضحة وكود صحيح (400 لمدخلات تالفة، 404 لغير الموجود، 409 لحالة غير مناسبة، 413 لتجاوز الحجم، 405 لطريقة خاطئة).
+
+### 4) محرك الدمج (الأهم — جودة عالية إلزامية)
+
+- ffprobe لكل مصدر: الدقة، معدل الإطارات، المدة، وجود صوت.
+- توحيد كل المصادر عبر filter_complex: scale + pad إلى أكبر دقة بين المدخلات (حد أقصى 1920×1080، أبعاد زوجية)، fps=30، setsar=1، format=yuv420p، ثم concat=n=:v=1:a=1.
+- مصدر بلا صوت؟ أضف مسارًا صامتًا anullsrc بنفس مدته بدل أن يفشل الدمج.
+- الترميز النهائي: libx264 CRF 18 + AAC 192k/44100Hz + +faststart — الناتج MP4 عالي الجودة يعمل فورًا على الويب. الـ preset من متغير البيئة.
+- تقدم الترميز: اقرأ out_time_us من -progress pipe:1 واحسب النسبة من المدة الإجمالية، وخزّنها في القاعدة (0–40 سحب المصادر، 40–90 ترميز، 100 اكتمال).
+- ثنائي ffmpeg قد يفقد صلاحية التنفيذ في الاستضافة: دالة ensureExecutable تنسخه إلى /tmp بصلاحية 755 عند الحاجة.
+- التحقق من الحدود قبل وأثناء العمل: عدد المصادر، حجم كل مصدر (أثناء التنزيل بمعدّل بايتات)، حجم الناتج بعد الترميز، المدة الإجمالية — تجاوز أي حد = فشل واضح برسالة، وليس انهيار.
+
+### 5) التخزين والحذف التلقائي (24 ساعة)
+
+- جداول: `jobs`, `sources`, `source_chunks`, `output_chunks` — أنشئها بـ `CREATE TABLE IF NOT EXISTS` مع مفتاح أساسي مركب.
+- كل Blob يُقسَّم إلى صفوف 2MB (حد HTTP في Turso) ويُقرأ تدفقيًا بصفحات من 8 صفوف.
+- كل مهمة لها `expires_at = created_at + 24 ساعة`؛ التنظيف يُنفَّذ كسولًا عند كل طلب إنشاء/دمج + نقطة `/api/cron` مجدولة يوميًا في `vercel.json`.
+- DELETE يحذف كل صفوف المهمة (jobs + sources + source_chunks + output_chunks) في batch واحد.
+- بعد نجاح الدمج احذف source_chunks — الناتج فقط هو المطلوب.
+
+### 6) نقاط حرجة (فشل أي منها = فشل المشروع)
+
+- حد حجم الطلب في Vercel ≈ 4.5MB → رفع الملفات من الواجهة يجب أن يكون أجزاء POST ثنائية 4MB (Content-Type: application/octet-stream) مع إعادة محاولة ×3.
+- بث الفيديو يجب أن يدعم Range (استجابة 206 + Content-Range) ليعمل التقديم/الترجيع في المشغل: حوّل صفوف الـ Blobs إلى stream مع تقليم أول/آخر جزء حسب المدى المطلوب.
+- `vercel.json`: `maxDuration: 300` لكل الدوال + crons يومي.
+- لا تعتمد على نظام ملفات دائم — `/tmp` فقط أثناء المعالجة، ونظّفه في `finally`.
+- متغيرات البيئة: `TURSO_DATABASE_URL` و `TURSO_AUTH_TOKEN` (إلزاميان) + `MAX_SOURCES=10`, `SOURCE_MAX_MB=200`, `OUTPUT_MAX_MB=150`, `MAX_TOTAL_DURATION_SEC=600`, `FFMPEG_PRESET=medium` — كلها قابلة للضبط.
+- لا تضع أسرارًا في المستودع: `.env` في `.gitignore` + ملف `.env.example` بدون قيم حقيقية.
+
+### 7) التسليم والاختبار (إلزامي قبل أن تعطيني النتيجة)
+
+- هيكل المشروع: `api/` (الدوال)، `lib/` (منطق: قاعدة بيانات، تخزين، دمج، أدوات)، `public/` (الواجهة)، `scripts/`.
+- سكربت اختبار وحدات يولّد فيديوهين مختلفي الدقة بـ ffmpeg، يدمجهما، ويتحقق: اكتمال الدمج، الدقة = أكبر دقة مدخل، المدة ≈ مجموع المدد، وجود الصوت، ثم يختبر التخزين في Turso والاسترجاع بتطابق sha256، ومسار رفع الأجزاء، وحدود الحجم، والحذف الشامل.
+- سكربت اختبار HTTP كامل ضد خادم التطوير: إنشاء مهمة من روابط → دمج → بث مع Range 206 → مهمة مختلطة (رابط + ملف مرفوع) → حذف → 404 → JSON تالف → قائمة فارغة.
+- README عربي: نشر على Vercel خطوة بخطوة (بما فيها متغيرا Turso)، توثيق API كامل بأمثلة curl واستجاباتها، جدول متغيرات البيئة، الحدود.
+- لا تنهِ المهمة قبل تشغيل الاختبارات وإصلاح كل ما يفشل، وأخبرني بعدد الاختبارات الناجحة.
+
+### 8) بعد البناء اشرح لي
+
+خطوات إنشاء قاعدة Turso والحصول على التوكن، وربط المستودع بـ Vercel وأين أضع متغيري Turso، وكيف أجرّب الـ API بـ curl بعد النشر، وما حدود الخطة المجانية التي يجب أن أعرفها (مدة الدالة، حجم الطلب، حجم قاعدة Turso).
