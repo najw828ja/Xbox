@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>دمج الفيديوهات — أداة مجانية عبر المتصفح</title>
+<style>
+  :root{
+    --bg:#0a0e1a; --bg2:#0d1326; --card:#121a30; --card2:#182244;
+    --border:#23305a; --text:#e8ecf8; --muted:#8b95b5;
+    --cyan:#22d3ee; --purple:#a78bfa; --grad:linear-gradient(135deg,#22d3ee,#a78bfa);
+    --ok:#34d399; --err:#f87171; --warn:#fbbf24;
+    --radius:16px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:'Segoe UI',Tahoma,'Noto Kufi Arabic',sans-serif;
+    background:
+      radial-gradient(1200px 600px at 85% -10%, rgba(167,139,250,.14), transparent 60%),
+      radial-gradient(900px 500px at 10% 0%, rgba(34,211,238,.12), transparent 55%),
+      var(--bg);
+    color:var(--text); min-height:100vh; line-height:1.7;
+  }
+  .wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px}
+  header{text-align:center;padding:28px 0 20px}
+  .logo{
+    display:inline-flex;align-items:center;gap:12px;font-size:1.9rem;font-weight:800;
+    background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .logo svg{width:38px;height:38px;stroke:url(#lg)}
+  header p{color:var(--muted);margin-top:8px;font-size:.95rem}
+  .badge{display:inline-block;margin-top:10px;font-size:.75rem;color:var(--cyan);
+    border:1px solid rgba(34,211,238,.35);border-radius:999px;padding:2px 12px;background:rgba(34,211,238,.08)}
+
+  .card{
+    background:linear-gradient(180deg,var(--card),var(--bg2));
+    border:1px solid var(--border);border-radius:var(--radius);
+    padding:20px;margin-bottom:18px;
+  }
+  .card h2{font-size:1.05rem;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+  .card h2 .n{
+    width:24px;height:24px;border-radius:8px;background:var(--grad);color:#0a0e1a;
+    display:inline-flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:800;flex:none;
+  }
+
+  .add-row{display:flex;gap:10px}
+  .add-row input{
+    flex:1;background:#0b1122;border:1px solid var(--border);border-radius:12px;
+    padding:12px 14px;color:var(--text);font-size:.95rem;outline:none;transition:.2s;
+  }
+  .add-row input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(34,211,238,.15)}
+  .btn{
+    border:none;cursor:pointer;border-radius:12px;padding:12px 20px;font-size:.95rem;font-weight:700;
+    color:#0a0e1a;background:var(--grad);transition:.2s;font-family:inherit;
+    display:inline-flex;align-items:center;gap:8px;justify-content:center;
+  }
+  .btn:hover{filter:brightness(1.12);transform:translateY(-1px)}
+  .btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+  .btn.ghost{background:transparent;color:var(--cyan);border:1px solid rgba(34,211,238,.4)}
+  .btn.ghost:hover{background:rgba(34,211,238,.08)}
+  .btn.danger{background:transparent;color:var(--err);border:1px solid rgba(248,113,113,.4);padding:8px 12px;font-size:.85rem}
+  .btn.danger:hover{background:rgba(248,113,113,.1)}
+
+  .drop{
+    border:2px dashed var(--border);border-radius:14px;padding:34px 16px;text-align:center;
+    color:var(--muted);cursor:pointer;transition:.2s;margin-top:16px;background:rgba(255,255,255,.01);
+  }
+  .drop.over{border-color:var(--cyan);background:rgba(34,211,238,.07);color:var(--cyan)}
+  .drop .big{font-size:2rem;margin-bottom:6px}
+  .drop b{color:var(--text)}
+  .drop .fmt{font-size:.78rem;margin-top:6px;opacity:.8}
+
+  .sources{margin-top:16px;display:flex;flex-direction:column;gap:10px}
+  .src{
+    display:flex;align-items:center;gap:12px;background:var(--card2);
+    border:1px solid var(--border);border-radius:14px;padding:12px 14px;
+    transition:.15s;user-select:none;
+  }
+  .src.dragging{opacity:.4;border-style:dashed}
+  .src .num{
+    width:30px;height:30px;flex:none;border-radius:10px;background:var(--grad);
+    color:#0a0e1a;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:.9rem;
+  }
+  .src .info{flex:1;min-width:0}
+  .src .name{font-size:.92rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr;text-align:left}
+  .src .meta{font-size:.75rem;color:var(--muted)}
+  .src .kind{font-size:.7rem;border-radius:6px;padding:1px 8px;margin-inline-start:6px}
+  .kind.url{color:var(--cyan);border:1px solid rgba(34,211,238,.35)}
+  .kind.file{color:var(--purple);border:1px solid rgba(167,139,250,.35)}
+  .src .acts{display:flex;gap:6px;flex:none}
+  .ic{
+    width:36px;height:36px;border-radius:10px;border:1px solid var(--border);background:#0b1122;
+    color:var(--text);cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:.15s;
+  }
+  .ic:hover{border-color:var(--cyan);color:var(--cyan)}
+  .ic.del:hover{border-color:var(--err);color:var(--err)}
+  .ic:disabled{opacity:.35;cursor:not-allowed}
+  .hint{font-size:.78rem;color:var(--muted);margin-top:10px}
+
+  .merge-zone{margin-top:18px}
+  #mergeBtn{width:100%;padding:16px;font-size:1.05rem}
+  .limits{display:flex;flex-wrap:wrap;gap:8px 18px;justify-content:center;margin-top:12px;font-size:.75rem;color:var(--muted)}
+  .limits span{display:inline-flex;align-items:center;gap:5px}
+  .limits i{width:7px;height:7px;border-radius:50%;background:var(--grad);display:inline-block}
+
+  .err-box{
+    display:none;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.4);
+    color:var(--err);border-radius:12px;padding:12px 14px;margin-top:14px;font-size:.9rem;
+  }
+
+  .prog-wrap{display:none;margin-top:18px}
+  .prog-head{display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:8px}
+  .prog-head b{color:var(--cyan)}
+  .bar{height:14px;background:#0b1122;border-radius:999px;overflow:hidden;border:1px solid var(--border)}
+  .bar > div{height:100%;width:0%;background:var(--grad);border-radius:999px;transition:width .5s ease}
+  .prog-steps{display:flex;gap:6px;margin-top:10px;font-size:.72rem;color:var(--muted)}
+  .prog-steps span{flex:1;text-align:center;padding:4px;border-radius:8px;transition:.3s}
+  .prog-steps span.on{color:#0a0e1a;background:var(--grad);font-weight:700}
+
+  .result{display:none}
+  .result video{width:100%;border-radius:14px;background:#000;max-height:440px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0}
+  .stat{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:10px;text-align:center}
+  .stat .v{font-weight:800;color:var(--cyan);font-size:1rem;direction:ltr}
+  .stat .k{font-size:.72rem;color:var(--muted);margin-top:2px}
+  .res-acts{display:flex;flex-wrap:wrap;gap:10px}
+  .res-acts .btn{flex:1;min-width:140px}
+  .countdown{
+    margin-top:14px;text-align:center;font-size:.85rem;color:var(--muted);
+    background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.3);border-radius:12px;padding:10px;
+  }
+  .countdown b{color:var(--purple);font-size:1rem;direction:ltr;display:inline-block;min-width:130px}
+
+  details.docs{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg2);margin-bottom:18px;overflow:hidden}
+  details.docs summary{
+    cursor:pointer;padding:16px 20px;font-weight:700;list-style:none;display:flex;align-items:center;gap:10px;
+  }
+  details.docs summary::-webkit-details-marker{display:none}
+  details.docs summary .arrow{transition:.25s;color:var(--cyan)}
+  details.docs[open] summary .arrow{transform:rotate(180deg)}
+  .docs-body{padding:0 20px 20px;border-top:1px solid var(--border)}
+  .docs-body h3{margin:16px 0 8px;font-size:.95rem;color:var(--cyan)}
+  .docs-body table{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:8px}
+  .docs-body th,.docs-body td{border:1px solid var(--border);padding:8px 10px;text-align:left;direction:ltr}
+  .docs-body th{background:var(--card2)}
+  .method{font-weight:800}
+  .method.post{color:var(--purple)} .method.get{color:var(--cyan)} .method.del{color:var(--err)}
+  pre{
+    background:#0b1122;border:1px solid var(--border);border-radius:12px;padding:14px;
+    overflow-x:auto;direction:ltr;text-align:left;font-size:.78rem;line-height:1.6;
+    position:relative;margin-top:8px;
+  }
+  pre .copy{
+    position:absolute;top:8px;right:8px;font-size:.7rem;padding:4px 10px;border-radius:8px;
+    background:var(--card2);border:1px solid var(--border);color:var(--muted);cursor:pointer;
+  }
+  pre .copy:hover{color:var(--cyan);border-color:var(--cyan)}
+  pre code{font-family:'Fira Code',Consolas,monospace;color:#c9d4f5}
+
+  footer{text-align:center;color:var(--muted);font-size:.78rem;padding:20px 0 8px}
+  .toast{
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--card2);border:1px solid var(--cyan);color:var(--text);
+    padding:12px 22px;border-radius:12px;font-size:.88rem;opacity:0;pointer-events:none;
+    transition:.3s;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.5);
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  @media(max-width:560px){
+    .stats{grid-template-columns:1fr 1fr}
+    .add-row{flex-direction:column}
+    .res-acts .btn{min-width:100%}
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#a78bfa"/>
+</linearGradient></defs></svg>
+
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 3h5v5"/><path d="M8 21H3v-5"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>
+      </svg>
+      دمج الفيديوهات
+    </div>
+    <p>اربط عدة مقاطع فيديو واحدًا عالي الجودة — مباشرة من المتصفح، بدون تسجيل</p>
+    <span class="badge" id="verBadge">v1.0.0</span>
+  </header>
+
+  <!-- ===== المحرر ===== -->
+  <div id="editor">
+    <div class="card">
+      <h2><span class="n">1</span> أضف مصادر الفيديو</h2>
+      <div class="add-row">
+        <input id="urlInput" type="url" placeholder="https://example.com/video.mp4 — الصق رابط فيديو مباشر ثم اضغط إضافة" aria-label="رابط فيديو">
+        <button class="btn" id="addUrlBtn" type="button">＋ إضافة رابط</button>
+      </div>
+
+      <div class="drop" id="dropZone" role="button" tabindex="0" aria-label="منطقة رفع الملفات — اسحب الملفات هنا أو اضغط للاختيار">
+        <div class="big">🎞️</div>
+        <b>اسحب وأفلت ملفات الفيديو هنا</b> أو اضغط للاختيار من الجهاز
+        <div class="fmt">الصيغ المدعومة: mp4 · mov · webm · mkv · avi · m4v · mpg · 3gp</div>
+        <input type="file" id="fileInput" multiple hidden accept=".mp4,.mov,.webm,.mkv,.avi,.m4v,.mpg,.mpeg,.3gp,video/*">
+      </div>
+
+      <div class="sources" id="sourcesList"></div>
+      <div class="hint" id="listHint" style="display:none">💡 ترتيب القائمة هو ترتيب الدمج — اسحب العناصر أو استخدم الأسهم لإعادة الترتيب</div>
+
+      <div class="err-box" id="errBox"></div>
+
+      <div class="merge-zone">
+        <button class="btn" id="mergeBtn" type="button" disabled>🎬 دمج الفيديوهات</button>
+        <div class="limits" id="limitsBar"></div>
+      </div>
+    </div>
+
+    <div class="prog-wrap card" id="progWrap">
+      <h2><span class="n">2</span> جارٍ التنفيذ</h2>
+      <div class="prog-head"><span id="progStage">تحضير المهمة…</span><b id="progPct">0%</b></div>
+      <div class="bar"><div id="progBar"></div></div>
+      <div class="prog-steps">
+        <span id="stUp">رفع الملفات</span><span id="stDl">سحب المصادر</span><span id="stEnc">ترميز ودمج</span><span id="stDone">اكتمل</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== النتيجة ===== -->
+  <div class="card result" id="resultCard">
+    <h2><span class="n">✓</span> تم الدمج بنجاح</h2>
+    <video id="player" controls playsinline preload="metadata"></video>
+    <div class="stats">
+      <div class="stat"><div class="v" id="rSize">—</div><div class="k">الحجم</div></div>
+      <div class="stat"><div class="v" id="rDur">—</div><div class="k">المدة</div></div>
+      <div class="stat"><div class="v" id="rRes">—</div><div class="k">الدقة</div></div>
+    </div>
+    <div class="res-acts">
+      <a class="btn" id="dlBtn" download>⬇️ تحميل الفيديو</a>
+      <button class="btn ghost" id="copyBtn" type="button">🔗 نسخ الرابط</button>
+      <button class="btn ghost" id="newBtn" type="button">✨ عملية جديدة</button>
+    </div>
+    <div class="countdown">يُحذف الفيديو تلقائيًا بعد <b id="cd">24:00:00</b></div>
+    <div class="err-box" id="resErr"></div>
+  </div>
+
+  <!-- ===== توثيق API ===== -->
+  <details class="docs">
+    <summary>
+      <span class="arrow">▼</span> 🛠️ توثيق API — للمطورين
+    </summary>
+    <div class="docs-body">
+      <h3>النقاط المتاحة</h3>
+      <table>
+        <thead><tr><th>Method</th><th>Endpoint</th><th>الوظيفة</th></tr></thead>
+        <tbody>
+          <tr><td class="method post">POST</td><td>/api/jobs</td><td>إنشاء مهمة دمج (روابط و/أو ملفات)</td></tr>
+          <tr><td class="method post">POST</td><td>/api/upload?job=&amp;seq=&amp;chunk=</td><td>رفع أجزاء الملفات (ثنائي ≤4MB)</td></tr>
+          <tr><td class="method post">POST</td><td>/api/jobs/{id}/process</td><td>تنفيذ الدمج (متزامن، 202 لو جارية)</td></tr>
+          <tr><td class="method get">GET</td><td>/api/jobs/{id}</td><td>الحالة + التقدم + الرابط عند الاكتمال</td></tr>
+          <tr><td class="method get">GET</td><td>/api/jobs/{id}/video</td><td>بث الناتج (Range 206) — ?download=1 للتحميل</td></tr>
+          <tr><td class="method del">DELETE</td><td>/api/jobs/{id}</td><td>حذف فوري شامل</td></tr>
+          <tr><td class="method get">GET</td><td>/api/config</td><td>الحدود العامة + الإصدار</td></tr>
+          <tr><td class="method get">GET</td><td>/api/cron</td><td>حذف المهام المنتهية (Cron يومي)</td></tr>
+        </tbody>
+      </table>
+      <h3>أمثلة curl</h3>
+      <pre><button class="copy">نسخ</button><code id="exCreate"></code></pre>
+      <pre><button class="copy">نسخ</button><code id="exStatus"></code></pre>
+      <pre><button class="copy">نسخ</button><code id="exProcess"></code></pre>
+      <pre><button class="copy">نسخ</button><code id="exDownload"></code></pre>
+      <pre><button class="copy">نسخ</button><code id="exDelete"></code></pre>
+    </div>
+  </details>
+
+  <footer>
+    كل الفيديوهات تُحذف تلقائيًا بعد 24 ساعة · معالجة عالية الجودة H.264 CRF 18 · يعمل عبر API عام مجاني
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+(function(){
+  var API = '';
+  var MAX_RETRIES = 3;
+  var $ = function(id){ return document.getElementById(id); };
+
+  var sources = []; // {kind:'url'|'file', url?, file?, name, size}
+  var cfg = { maxSources:10, sourceMaxMb:200, outputMaxMb:150, maxTotalDurationSec:600, uploadChunkBytes:4*1024*1024, version:'1.0.0' };
+  var cdTimer = null, pollTimer = null;
+
+  function toast(msg, bad){
+    var t = $('toast');
+    t.textContent = msg;
+    t.style.borderColor = bad ? 'var(--err)' : 'var(--cyan)';
+    t.classList.add('show');
+    clearTimeout(t._t);
+    t._t = setTimeout(function(){ t.classList.remove('show'); }, 2600);
+  }
+  function showErr(boxId, msg){
+    var b = $(boxId);
+    if (!msg){ b.style.display='none'; return; }
+    b.textContent = '⚠️ ' + msg;
+    b.style.display = 'block';
+  }
+  function fmtBytes(n){
+    if (n == null) return '—';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+    return (n/1048576).toFixed(1) + ' MB';
+  }
+  function fmtDur(s){
+    if (s == null) return '—';
+    s = Math.round(s);
+    var h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+    return (h? h+':' : '') + String(m).padStart(h?2:1,'0') + ':' + String(x).padStart(2,'0');
+  }
+
+  // ---------- إضافة المصادر ----------
+  function addUrl(){
+    var inp = $('urlInput');
+    var u = inp.value.trim();
+    if (!u) return toast('اكتب رابط فيديو أولًا', true);
+    try {
+      var p = new URL(u);
+      if (p.protocol !== 'http:' && p.protocol !== 'https:') throw 0;
+    } catch(e){ return toast('الرابط غير صالح — يجب أن يبدأ بـ http:// أو https://', true); }
+    if (sources.length >= cfg.maxSources) return toast('الحد الأقصى ' + cfg.maxSources + ' مصادر', true);
+    sources.push({ kind:'url', url:u, name: u.split('/').pop() || u, size:null });
+    inp.value = '';
+    renderSources();
+  }
+  function addFiles(files){
+    var ok = 0;
+    for (var i = 0; i < files.length; i++){
+      if (sources.length >= cfg.maxSources){ toast('الحد الأقصى ' + cfg.maxSources + ' مصادر — تم تجاهل البقية', true); break; }
+      var f = files[i];
+      if (f.size > cfg.sourceMaxMb * 1048576){ toast('الملف "' + f.name + '" أكبر من الحد (' + cfg.sourceMaxMb + 'MB)', true); continue; }
+      sources.push({ kind:'file', file:f, name:f.name, size:f.size });
+      ok++;
+    }
+    if (ok) toast('أُضيف ' + ok + ' ملف');
+    renderSources();
+  }
+  function removeSource(i){ sources.splice(i,1); renderSources(); }
+  function moveSource(i, dir){
+    var j = i + dir;
+    if (j < 0 || j >= sources.length) return;
+    var t = sources[i]; sources[i] = sources[j]; sources[j] = t;
+    renderSources();
+  }
+
+  // ---------- عرض القائمة + إعادة الترتيب ----------
+  var dragIdx = null;
+  function renderSources(){
+    var list = $('sourcesList');
+    list.innerHTML = '';
+    sources.forEach(function(s, i){
+      var d = document.createElement('div');
+      d.className = 'src';
+      d.draggable = true;
+      d.dataset.idx = i;
+      d.innerHTML =
+        '<div class="num">' + (i+1) + '</div>' +
+        '<div class="info">' +
+          '<div class="name" title="' + escapeHtml(s.name) + '">' + escapeHtml(s.name) + '</div>' +
+          '<div class="meta"><span class="kind ' + s.kind + '">' + (s.kind==='url' ? 'رابط' : 'ملف') + '</span>' +
+          (s.size != null ? ' · ' + fmtBytes(s.size) : '') + '</div>' +
+        '</div>' +
+        '<div class="acts">' +
+          '<button class="ic up" title="لأعلى" aria-label="تحريك لأعلى" ' + (i===0?'disabled':'') + '>↑</button>' +
+          '<button class="ic down" title="لأسفل" aria-label="تحريك لأسفل" ' + (i===sources.length-1?'disabled':'') + '>↓</button>' +
+          '<button class="ic del" title="حذف" aria-label="حذف المصدر">✕</button>' +
+        '</div>';
+      d.querySelector('.up').onclick = function(){ moveSource(i,-1); };
+      d.querySelector('.down').onclick = function(){ moveSource(i,1); };
+      d.querySelector('.del').onclick = function(){ removeSource(i); };
+      d.addEventListener('dragstart', function(e){ dragIdx = i; d.classList.add('dragging'); e.dataTransfer.effectAllowed='move'; });
+      d.addEventListener('dragend', function(){ dragIdx = null; d.classList.remove('dragging'); });
+      d.addEventListener('dragover', function(e){ e.preventDefault(); });
+      d.addEventListener('drop', function(e){
+        e.preventDefault(); e.stopPropagation();
+        if (dragIdx !== null && dragIdx !== i){
+          var moved = sources.splice(dragIdx,1)[0];
+          sources.splice(i,0,moved);
+          renderSources();
+        }
+      });
+      list.appendChild(d);
+    });
+    $('listHint').style.display = sources.length ? 'block' : 'none';
+    $('mergeBtn').disabled = !sources.length;
+  }
+  function escapeHtml(s){
+    return String(s==null?'':s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  // ---------- منطقة السحب والإفلات ----------
+  var dz = $('dropZone');
+  dz.addEventListener('click', function(){ $('fileInput').click(); });
+  dz.addEventListener('keydown', function(e){ if (e.key==='Enter'||e.key===' '){ e.preventDefault(); $('fileInput').click(); } });
+  $('fileInput').addEventListener('change', function(e){ addFiles(e.target.files); e.target.value=''; });
+  ['dragenter','dragover'].forEach(function(ev){
+    dz.addEventListener(ev, function(e){ e.preventDefault(); dz.classList.add('over'); });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    dz.addEventListener(ev, function(e){ e.preventDefault(); dz.classList.remove('over'); });
+  });
+  dz.addEventListener('drop', function(e){ addFiles(e.dataTransfer.files); });
+  // منع فتح الملفات في المتصفح عند الإفلات خارج المنطقة
+  window.addEventListener('dragover', function(e){ e.preventDefault(); });
+  window.addEventListener('drop', function(e){ if(!dz.contains(e.target)) e.preventDefault(); });
+
+  $('addUrlBtn').addEventListener('click', addUrl);
+  $('urlInput').addEventListener('keydown', function(e){ if (e.key==='Enter') addUrl(); });
+  $('mergeBtn').addEventListener('click', merge);
+
+  // ---------- التقدم ----------
+  function setProgress(pct, stage){
+    $('progPct').textContent = pct + '%';
+    $('progBar').style.width = pct + '%';
+    if (stage) $('progStage').textContent = stage;
+    $('stUp').classList.toggle('on', pct > 0);
+    $('stDl').classList.toggle('on', pct >= 10);
+    $('stEnc').classList.toggle('on', pct >= 40);
+    $('stDone').classList.toggle('on', pct >= 100);
+  }
+  function showProg(on){
+    $('progWrap').style.display = on ? 'block' : 'none';
+    if (on) setProgress(0, 'تحضير المهمة…');
+  }
+
+  // ---------- الرفع بإعادة المحاولة ×3 ----------
+  function uploadChunkWithRetry(url, buf, attempt){
+    attempt = attempt || 1;
+    return fetch(url, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/octet-stream' },
+      body: buf,
+    }).then(function(r){
+      if (!r.ok) return r.json().catch(function(){return {};}).then(function(j){
+        throw new Error(j.error || ('HTTP ' + r.status));
+      });
+      return r.json();
+    }).catch(function(e){
+      if (attempt < MAX_RETRIES){
+        var wait = 800 * attempt;
+        return new Promise(function(res){ setTimeout(res, wait); })
+          .then(function(){ return uploadChunkWithRetry(url, buf, attempt + 1); });
+      }
+      throw e;
+    });
+  }
+
+  function fileToBuf(file){
+    return new Promise(function(res, rej){
+      var fr = new FileReader();
+      fr.onload = function(){ res(fr.result); };
+      fr.onerror = rej;
+      fr.readAsArrayBuffer(file);
+    });
+  }
+
+  // ---------- التدفق الكامل ----------
+  function merge(){
+    if (!sources.length) return;
+    showErr('errBox', null);
+    $('mergeBtn').disabled = true;
+    showProg(true);
+    setProgress(0, 'إنشاء المهمة…');
+
+    var hasFiles = sources.some(function(s){ return s.kind === 'file'; });
+
+    var body = { sources: sources.map(function(s){
+      return s.kind === 'url'
+        ? { kind:'url', url:s.url }
+        : { kind:'file', name:s.name, size:s.size, mime:s.file ? (s.file.type || 'video/mp4') : 'video/mp4' };
+    })};
+
+    fetch(API + '/api/jobs', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    })
+    .then(function(r){
+      if (!r.ok) return r.json().catch(function(){return {};}).then(function(j){ throw new Error(j.error || ('HTTP ' + r.status)); });
+      return r.json();
+    })
+    .then(function(job){
+      var jobId = job.jobId;
+      history.replaceState(null, '', '#job=' + jobId);
+      if (!hasFiles){ setProgress(10, 'سحب المصادر وترميز الفيديو…'); return runProcess(jobId); }
+
+      // رفع الأجزاء بالتتابع مع تقدم حقيقي
+      var files = sources.filter(function(s){ return s.kind === 'file'; });
+      var metaBySeq = {};
+      (job.uploads || []).forEach(function(u){ metaBySeq[u.seq] = u; });
+
+      var fileIdx = 0, uploadTotal = 0, uploadDone = 0;
+      files.forEach(function(s){ var m = metaBySeq[sources.indexOf(s)]; uploadTotal += m ? m.chunks : Math.ceil(s.size / job.uploadChunkBytes); });
+
+      function nextFile(){
+        if (fileIdx >= files.length){ setProgress(10, 'اكتمل الرفع — بدء الدمج…'); return runProcess(jobId); }
+        var s = files[fileIdx];
+        var seqIdx = sources.indexOf(s);
+        var m = metaBySeq[seqIdx];
+        var chunkBytes = job.uploadChunkBytes || cfg.uploadChunkBytes;
+        var chunks = m ? m.chunks : Math.ceil(s.size / chunkBytes);
+        setProgress(Math.floor(10 * uploadDone / Math.max(1,uploadTotal)), 'رفع الملفات… ' + s.name);
+
+        return fileToBuf(s.file).then(function(all){
+          var ci = 0;
+          function nextChunk(){
+            if (ci >= chunks){
+              fileIdx++; uploadDone += chunks;
+              return nextFile();
+            }
+            var from = ci * chunkBytes;
+            var to = Math.min(from + chunkBytes, all.byteLength);
+            var url = (API + '/api/upload?job=' + encodeURIComponent(jobId) + '&seq=' + seqIdx + '&chunk=' + ci);
+            return uploadChunkWithRetry(url, all.slice(from, to)).then(function(){
+              ci++; uploadDone++;
+              setProgress(Math.max(1, Math.floor(10 * uploadDone / Math.max(1,uploadTotal))),
+                'رفع الملفات… ' + s.name + ' (' + ci + '/' + chunks + ')');
+              return nextChunk();
+            });
+          }
+          return nextChunk();
+        });
+      }
+      return nextFile();
+    })
+    .catch(function(e){
+      showProg(false);
+      showErr('errBox', e.message || 'فشل غير متوقع');
+      $('mergeBtn').disabled = false;
+    });
+  }
+
+  function runProcess(jobId){
+    setProgress(10, 'سحب المصادر وترميز الفيديو…');
+    startPolling(jobId);
+    return fetch(API + '/api/jobs/' + encodeURIComponent(jobId) + '/process', { method:'POST' })
+    .then(function(r){
+      if (r.status === 202) return r.json(); // جارية — الاستطلاع يتكفل
+      if (!r.ok) return r.json().catch(function(){return {};}).then(function(j){ throw new Error(j.error || ('HTTP ' + r.status)); });
+      return r.json();
+    })
+    .then(function(j){
+      if (j.status === 'done'){ stopPolling(); setProgress(100, 'اكتمل!'); setTimeout(function(){ showResult(jobId, j); }, 350); return; }
+      // 202 — الاستطلاع سيكمل
+    })
+    .catch(function(e){
+      stopPolling();
+      showProg(false);
+      showErr('errBox', e.message || 'فشل الدمج');
+      $('mergeBtn').disabled = false;
+    });
+  }
+
+  function startPolling(jobId){
+    stopPolling();
+    pollTimer = setInterval(function(){
+      fetch(API + '/api/jobs/' + encodeURIComponent(jobId))
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){
+        if (!j) return;
+        if (j.status === 'done'){
+          stopPolling();
+          setProgress(100, 'اكتمل!');
+          setTimeout(function(){ showResult(jobId, j); }, 350);
+        } else if (j.status === 'failed'){
+          stopPolling();
+          showProg(false);
+          showErr('errBox', j.error || 'فشل الدمج');
+          $('mergeBtn').disabled = false;
+        } else if (j.progress > 10){
+          setProgress(j.progress, j.progress < 40 ? 'سحب المصادر…' : (j.progress < 100 ? 'ترميز ودمج الفيديو…' : 'اكتمل!'));
+        }
+      }).catch(function(){});
+    }, 1500);
+  }
+  function stopPolling(){ if (pollTimer){ clearInterval(pollTimer); pollTimer = null; } }
+
+  // ---------- النتيجة ----------
+  function showResult(jobId, data){
+    stopPolling();
+    showProg(false);
+    $('editor').style.display = 'none';
+    $('resultCard').style.display = 'block';
+    window.scrollTo({ top:0, behavior:'smooth' });
+
+    var videoUrl = API + '/api/jobs/' + encodeURIComponent(jobId) + '/video';
+    $('player').src = videoUrl;
+    $('dlBtn').href = videoUrl + '?download=1';
+    $('dlBtn').setAttribute('download', 'merged-' + jobId + '.mp4');
+    $('rSize').textContent = fmtBytes(data.size);
+    $('rDur').textContent = fmtDur(data.duration);
+    $('rRes').textContent = data.resolution || '—';
+    $('copyBtn').onclick = function(){
+      var abs = new URL(videoUrl, location.href).href;
+      (navigator.clipboard ? navigator.clipboard.writeText(abs) : Promise.reject())
+        .then(function(){ toast('تم نسخ الرابط ✓'); })
+        .catch(function(){
+          var ta = document.createElement('textarea'); ta.value = abs;
+          document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); toast('تم نسخ الرابط ✓'); } catch(e){ toast('تعذّر النسخ', true); }
+          document.body.removeChild(ta);
+        });
+    };
+
+    // عدّاد تنازلي حتى انتهاء الصلاحية (24 ساعة)
+    if (cdTimer) clearInterval(cdTimer);
+    function tick(){
+      var exp = data.expiresAt ? new Date(data.expiresAt).getTime() : (Date.now() + 24*3600*1000);
+      var left = Math.max(0, exp - Date.now());
+      var s = Math.floor(left/1000);
+      var h = String(Math.floor(s/3600)).padStart(2,'0');
+      var m = String(Math.floor(s%3600/60)).padStart(2,'0');
+      var x = String(s%60).padStart(2,'0');
+      $('cd').textContent = h + ':' + m + ':' + x;
+      if (left <= 0) clearInterval(cdTimer);
+    }
+    tick();
+    cdTimer = setInterval(tick, 1000);
+  }
+
+  $('newBtn').addEventListener('click', function(){
+    if (cdTimer) clearInterval(cdTimer);
+    $('player').pause(); $('player').removeAttribute('src'); $('player').load();
+    $('resultCard').style.display = 'none';
+    $('editor').style.display = 'block';
+    showProg(false);
+    showErr('errBox', null);
+    $('mergeBtn').disabled = !sources.length;
+    history.replaceState(null, '', location.pathname);
+    window.scrollTo({ top:0, behavior:'smooth' });
+  });
+
+  // ---------- استئناف العرض عبر #job=<id> ----------
+  function resumeFromHash(){
+    var m = /#job=([A-Za-z0-9_-]+)/.exec(location.hash);
+    if (!m) return;
+    var jobId = m[1];
+    $('mergeBtn').disabled = true;
+    showProg(true);
+    setProgress(5, 'استرجاع المهمة…');
+    fetch(API + '/api/jobs/' + encodeURIComponent(jobId))
+    .then(function(r){
+      if (!r.ok) return r.json().catch(function(){return {};}).then(function(j){ throw new Error(j.error || ('HTTP ' + r.status)); });
+      return r.json();
+    })
+    .then(function(j){
+      if (j.status === 'done'){ setProgress(100, 'اكتمل!'); showResult(jobId, j); }
+      else if (j.status === 'failed'){ showProg(false); showErr('errBox', j.error || 'فشلت هذه المهمة سابقًا'); }
+      else {
+        setProgress(Math.max(5, j.progress || 0), 'استئناف المعالجة…');
+        if (j.status === 'queued' || j.status === 'uploading'){
+          showErr('errBox', 'المهمة لم تكتمل رفعها بعد — لا يمكن استئنافها، ابدأ عملية جديدة');
+          showProg(false);
+          $('mergeBtn').disabled = false;
+          return;
+        }
+        startPolling(jobId);
+        // لو توقفت المعالجة (السيرفر أُعيد تشغيله) نعيد تشغيلها
+        fetch(API + '/api/jobs/' + encodeURIComponent(jobId) + '/process', { method:'POST' })
+          .then(function(r){ return r.json(); })
+          .then(function(j2){
+            if (j2 && j2.status === 'done'){ stopPolling(); setProgress(100,'اكتمل!'); setTimeout(function(){ showResult(jobId, j2); }, 350); }
+          }).catch(function(){});
+      }
+    })
+    .catch(function(e){
+      showProg(false);
+      showErr('errBox', 'تعذّر استرجاع المهمة: ' + (e.message || ''));
+    });
+  }
+
+  // ---------- التوثيق بالدومين الحقيقي ----------
+  function fillDocs(){
+    var origin = location.origin;
+    var L = [
+      ['exCreate', 'curl -X POST ' + origin + '/api/jobs \\\n  -H "Content-Type: application/json" \\\n  -d \'{"videos":["https://example.com/a.mp4","https://example.com/b.mp4"]}\'\n\n# الاستجابة 201:\n# {"jobId":"...","status":"queued","statusUrl":"...","processUrl":"...","expiresAt":"..."}'],
+      ['exStatus', '# متابعة الحالة والتقدم (0–100)\ncurl ' + origin + '/api/jobs/<jobId>\n\n# الاستجابة 200 عند الاكتمال:\n# {"jobId":"...","status":"done","progress":100,"videoUrl":"...","size":...,"duration":...,"resolution":"1280x720"}'],
+      ['exProcess', '# تنفيذ الدمج (متزامن — قد يستغرق وقتًا)\ncurl -X POST ' + origin + '/api/jobs/<jobId>/process\n\n# الاستجابة 200:\n# {"status":"done","videoUrl":"...","downloadUrl":"...","size":...,"duration":...,"resolution":"...","expiresAt":"..."}\n# 202 لو جارية بالفعل'],
+      ['exDownload', '# تحميل الفيديو الناتج\ncurl -o merged.mp4 "' + origin + '/api/jobs/<jobId>/video?download=1"\n\n# البث يدعم Range (206) للتقديم والترجيع:\ncurl -H "Range: bytes=0-1023" ' + origin + '/api/jobs/<jobId>/video'],
+      ['exDelete', '# حذف فوري شامل (قبل انتهاء 24 ساعة)\ncurl -X DELETE ' + origin + '/api/jobs/<jobId>\n\n# الاستجابة 200:\n# {"deleted":true,"jobId":"..."}'],
+    ];
+    L.forEach(function(x){ $(x[0]).textContent = x[1]; });
+    document.querySelectorAll('pre .copy').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var code = btn.parentElement.querySelector('code').textContent;
+        (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject())
+          .then(function(){ btn.textContent = 'تم ✓'; setTimeout(function(){ btn.textContent = 'نسخ'; }, 1500); })
+          .catch(function(){});
+      });
+    });
+  }
+
+  // ---------- الإقلاع ----------
+  fetch(API + '/api/config')
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(c){
+      if (!c) return;
+      cfg = Object.assign(cfg, c);
+      $('verBadge').textContent = 'v' + (c.version || '1.0.0');
+      $('limitsBar').innerHTML =
+        '<span><i></i>حتى ' + c.maxSources + ' مصادر</span>' +
+        '<span><i></i>مصدر ≤ ' + c.sourceMaxMb + 'MB</span>' +
+        '<span><i></i>الناتج ≤ ' + c.outputMaxMb + 'MB</span>' +
+        '<span><i></i>المدة ≤ ' + c.maxTotalDurationSec + ' ثانية</span>' +
+        '<span><i></i>الحذف التلقائي بعد ' + (c.expireHours || 24) + ' ساعة</span>';
+    }).catch(function(){});
+
+  fillDocs();
+  renderSources();
+  resumeFromHash();
+})();
+</script>
+</body>
+</html>
