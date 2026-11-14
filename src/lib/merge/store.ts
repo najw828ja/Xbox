@@ -60,6 +60,14 @@ export async function ensureMergeSchema(): Promise<void> {
       .catch((err) => {
         schemaReady = undefined;
         throw err;
+      })
+      .then(async () => {
+        // ترحيل إضافي آمن وقابل للتكرار: عمود خطة التحرير (Phase 2) — لا يمس الصفوف الموجودة
+        try {
+          await getTurso().execute("ALTER TABLE merge_jobs ADD COLUMN ops_json TEXT");
+        } catch {
+          /* العمود موجود مسبقًا */
+        }
       });
   }
   await schemaReady;
@@ -79,6 +87,7 @@ export interface MergeJobRow {
   output_width: number | null;
   output_height: number | null;
   output_mime: string | null;
+  ops_json?: string | null;
 }
 
 export interface MergeSourceRow {
@@ -112,7 +121,8 @@ function newId(): string {
 }
 
 export async function createJob(
-  sources: NewSource[]
+  sources: NewSource[],
+  ops?: unknown
 ): Promise<{ id: string; status: string; createdAt: Date; expiresAt: Date }> {
   await ensureMergeSchema();
   const id = newId();
@@ -120,11 +130,12 @@ export async function createJob(
   const expiresAt = new Date(createdAt.getTime() + mergeConfig.expireHours * 3600 * 1000);
   const hasFiles = sources.some((s) => s.kind === "file");
   const status = hasFiles ? "uploading" : "queued";
+  const opsJson = ops === undefined ? null : JSON.stringify(ops);
 
   const stmts = [
     {
-      sql: "INSERT INTO merge_jobs (id, status, progress, created_at, expires_at) VALUES (?, ?, 0, ?, ?)",
-      args: [id, status, createdAt.toISOString(), expiresAt.toISOString()],
+      sql: "INSERT INTO merge_jobs (id, status, progress, created_at, expires_at, ops_json) VALUES (?, ?, 0, ?, ?, ?)",
+      args: [id, status, createdAt.toISOString(), expiresAt.toISOString(), opsJson],
     },
     ...sources.map((s, i) => ({
       sql: `INSERT INTO merge_sources (job_id, seq, kind, url, name, size, mime, status)

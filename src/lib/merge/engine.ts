@@ -9,6 +9,13 @@ import { spawn } from "child_process";
 import { mergeConfig as config } from "./config";
 import * as store from "./store";
 import { getFfmpeg, getFfprobe, ffprobeFile } from "./ffmpeg";
+import {
+  buildEditFilterGraph,
+  effectiveDurations,
+  parseEditPlan,
+  sourceInputArgs,
+  type EditPlan,
+} from "./edit";
 
 // ---------- تنزيل من رابط مباشر مع عدّ البايتات والتحقق من الحد ----------
 
@@ -150,7 +157,8 @@ export interface MergeLocalResult {
 
 export async function mergeLocalFiles(
   files: string[],
-  onProgress?: (pct: number) => Promise<void> | void
+  onProgress?: (pct: number) => Promise<void> | void,
+  plan?: EditPlan
 ): Promise<MergeLocalResult> {
   if (!files.length) throw new Error("لا توجد مصادر للدمج");
   const ffmpeg = await getFfmpeg();
@@ -159,30 +167,41 @@ export async function mergeLocalFiles(
   const probes = [];
   for (const f of files) probes.push(await ffprobeFile(f));
 
-  const totalDur = probes.reduce((a, p) => a + p.duration, 0);
+  // المدد الفعلية: مع خطة تحرير تُحسب بعد القصّ (تحقق دلالي صارم)، وإلا مدد المصادر كاملة (مسار Phase 1 حرفيًا)
+  let durations = probes.map((p) => p.duration);
+  let inputArgs: string[][] = files.map(() => []);
+  let graph: { filter: string; W: number; H: number; vOut: string; aOut: string };
+  if (plan) {
+    durations = effectiveDurations(probes, plan);
+    inputArgs = sourceInputArgs(plan, files.length, durations);
+    graph = buildEditFilterGraph(probes, plan);
+  } else {
+    graph = { ...buildFilterGraph(probes), vOut: "vout", aOut: "aout" };
+  }
+
+  const totalDur = durations.reduce((a, d) => a + d, 0);
   if (totalDur > config.maxTotalDurationSec) {
     throw new Error(
       `المدة الإجمالية (${totalDur.toFixed(1)} ثانية) تتجاوز الحد المسموح (${config.maxTotalDurationSec} ثانية)`
     );
   }
 
-  const { filter, W, H } = buildFilterGraph(probes);
   const outPath = path.join(os.tmpdir(), `vm-out-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`);
 
   const args: string[] = ["-hide_banner", "-loglevel", "error", "-y", "-nostdin"];
-  for (const f of files) args.push("-i", f);
-  for (const p of probes) {
-    if (!p.hasAudio) {
-      args.push("-f", "lavfi", "-t", p.duration.toFixed(3), "-i", `anullsrc=channel_layout=stereo:sample_rate=${config.audioRate}`);
+  for (let i = 0; i < files.length; i++) args.push(...inputArgs[i], "-i", files[i]);
+  for (let i = 0; i < probes.length; i++) {
+    if (!probes[i].hasAudio) {
+      args.push("-f", "lavfi", "-t", durations[i].toFixed(3), "-i", `anullsrc=channel_layout=stereo:sample_rate=${config.audioRate}`);
     }
   }
   args.push(
     "-filter_complex",
-    filter,
+    graph.filter,
     "-map",
-    "[vout]",
+    `[${graph.vOut}]`,
     "-map",
-    "[aout]",
+    `[${graph.aOut}]`,
     "-c:v",
     "libx264",
     "-crf",
@@ -217,8 +236,8 @@ export async function mergeLocalFiles(
       width: probe.width,
       height: probe.height,
       hasAudio: probe.hasAudio,
-      W,
-      H,
+      W: graph.W,
+      H: graph.H,
       totalDur,
     };
   } catch (e) {
@@ -260,6 +279,24 @@ export async function processJob(jobId: string): Promise<ProcessJobResult> {
   if (!sources.length) {
     const e: CodedError = Object.assign(new Error("لا توجد مصادر في هذه المهمة"), { code: 400 });
     throw e;
+  }
+
+  // خطة تحرير اختيارية (Phase 2) — غائبة = مسار الدمج القياسي حرفيًا
+  let plan: EditPlan | undefined;
+  if (job.ops_json) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(String(job.ops_json));
+    } catch {
+      const e: CodedError = Object.assign(new Error("خطة التحرير المخزنة تالفة (JSON غير صالح)"), { code: 400 });
+      throw e;
+    }
+    const parsed = parseEditPlan(raw);
+    if (!parsed.ok) {
+      const e: CodedError = Object.assign(new Error(`خطة التحرير المخزنة مرفوضة: ${parsed.error}`), { code: 400 });
+      throw e;
+    }
+    plan = parsed.plan;
   }
 
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "vm-job-"));
@@ -305,8 +342,21 @@ export async function processJob(jobId: string): Promise<ProcessJobResult> {
       await store.updateJob(jobId, { progress: Math.min(40, Math.round((i + 1) * perSource)) });
     }
 
-    // التحقق من المدة الإجمالية قبل الترميز
-    const totalDur = probes.reduce((a, p) => a + p.duration, 0);
+    // التحقق من المدة الإجمالية قبل الترميز — مع خطة تحرير تُحسب بعد القصّ (أخطاء الخطة ← 400)
+    let durations = probes.map((p) => p.duration);
+    if (plan) {
+      try {
+        durations = effectiveDurations(probes, plan);
+        buildEditFilterGraph(probes, plan); // تحقق كامل من الرسم قبل التنفيذ
+      } catch (err) {
+        const e: CodedError = Object.assign(
+          new Error(err instanceof Error && err.message ? err.message : "خطة التحرير غير صالحة"),
+          { code: 400 }
+        );
+        throw e;
+      }
+    }
+    const totalDur = durations.reduce((a, d) => a + d, 0);
     if (totalDur > config.maxTotalDurationSec) {
       const e: CodedError = Object.assign(
         new Error(`المدة الإجمالية (${totalDur.toFixed(1)} ثانية) تتجاوز الحد المسموح (${config.maxTotalDurationSec} ثانية)`),
@@ -319,7 +369,7 @@ export async function processJob(jobId: string): Promise<ProcessJobResult> {
     await store.updateJob(jobId, { progress: 40 });
     const result = await mergeLocalFiles(localFiles, async (pct) => {
       await store.updateJob(jobId, { progress: Math.min(90, pct) });
-    });
+    }, plan);
 
     // المرحلة 3: تخزين الناتج (90→100)
     await store.updateJob(jobId, { progress: 91 });

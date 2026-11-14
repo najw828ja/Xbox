@@ -170,15 +170,15 @@ export async function mergerHealthy(): Promise<boolean> {
   }
 }
 
-/** إنشاء مهمة دمج جديدة من روابط — يعيد jobId (الحالة تبدأ queued) */
-export async function createMergeJob(opts: { urls: string[] }, signal?: AbortSignal): Promise<string> {
+/** إنشاء مهمة دمج/تحرير جديدة من روابط — يعيد jobId (الحالة تبدأ queued، أو uploading مع خطة+ملفات) */
+export async function createMergeJob(opts: { urls: string[]; ops?: unknown }, signal?: AbortSignal): Promise<string> {
   if (signal?.aborted) throw new Error("aborted");
   const body = await fetchJson(
     `${mergerBase()}/api/merge/jobs`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videos: opts.urls }),
+      body: JSON.stringify(opts.ops !== undefined ? { videos: opts.urls, ops: opts.ops } : { videos: opts.urls }),
     },
     CREATE_TIMEOUT_MS
   );
@@ -389,6 +389,146 @@ export async function runMerge(args: MergeArgs): Promise<MergeOutcome> {
 
   // 5) انتهت نافذة الانتظار (أو أُلغي الطلب) — process يبقى يعمل في الخلفية ويحدّث Turso
   //    عند انتهائه، وget_task يكمل المتابعة في الاستعلامات القادمة.
+  return { kind: "processing", task };
+}
+
+/* ─────────────────────────── التحرير (Phase 2) ─────────────────────────── */
+
+export interface EditArgs {
+  urls: string[];
+  /** خطة تحرير مُتحقق منها بـ parseEditPlan مسبقًا */
+  ops: unknown;
+  waitSeconds: number;
+  onProgress?: (info: { progress: number; total: number; message: string; percent?: number; taskId?: string }) => Promise<void> | void;
+  signal?: AbortSignal;
+}
+
+/**
+ * تنفيذ عملية تحرير كاملة — نفس تدفق runMerge حرفيًا (نفس البنية ونفس المسارات)
+ * مع مصدر واحد على الأقل وخطة تحرير تُمرَّر مع طلب الإنشاء.
+ * مسار runMerge نفسه لم يُمَسّ — الدمج القياسي بلا خطة يعمل كما تم التحقق منه.
+ */
+export async function runEdit(args: EditArgs): Promise<MergeOutcome> {
+  const urls = args.urls.map((u) => u.trim()).filter(Boolean);
+  if (urls.length < 1) {
+    return { kind: "invalid", reason: "التحرير يحتاج رابط فيديو واحدًا على الأقل" };
+  }
+  const bad = urls.filter((u) => !/^https?:\/\//i.test(u));
+  if (bad.length) {
+    return { kind: "invalid", reason: `كل الروابط يجب أن تكون روابط http/https مباشرة وعامة. غير صالح: ${bad.slice(0, 3).join(" ، ")}` };
+  }
+  if (urls.length > MERGER_MAX_SOURCES) {
+    return { kind: "invalid", reason: `أقصى عدد مقاطع هو ${MERGER_MAX_SOURCES} (حدود الخدمة)` };
+  }
+
+  const prompt = `تحرير ${urls.length} مقطع فيديو (قصّ/نسبة أبعاد/دقة)`;
+  let task = await insertTask({
+    provider: "merger",
+    providerTaskId: null,
+    keyId: null,
+    model: MERGER_MODEL,
+    type: "merge",
+    prompt,
+    params: { urls, ops: args.ops },
+    status: "pending",
+    progress: 0,
+  });
+
+  let jobId: string;
+  try {
+    jobId = await createMergeJob({ urls, ops: args.ops }, args.signal);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    task = (await updateTask(task.id, { status: "failed", progress: 100, errorMessage: `فشل إنشاء مهمة التحرير: ${msg}` })) ?? task;
+    return { kind: "failed", task };
+  }
+
+  task = (await updateTask(task.id, { providerTaskId: jobId, status: "processing", progress: 5 })) ?? task;
+  const total = estimateMergeSeconds(urls);
+  const startedAt = Date.now();
+  const deadline = startedAt + args.waitSeconds * 1000;
+
+  await args.onProgress?.({
+    progress: 0,
+    total,
+    percent: 5,
+    message: `قُبلت مهمة التحرير — جارٍ تنفيذ الخطة على ${urls.length} مقطع…`,
+    taskId: task.id,
+  });
+
+  let settled = false;
+  processInFlight.add(jobId);
+  const processPromise = processMergeJob(jobId)
+    .then((st) => {
+      processInFlight.delete(jobId);
+      return finalizeMerge(task, st);
+    })
+    .catch(async (err) => {
+      processInFlight.delete(jobId);
+      if (settled) return { kind: "processing", task } as MergeOutcome;
+      if (isServiceDeclaredError(err)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const failed = (await updateTask(task.id, { status: "failed", progress: 100, errorMessage: msg })) ?? task;
+        return { kind: "failed", task: failed } as MergeOutcome;
+      }
+      return { kind: "processing", task } as MergeOutcome;
+    });
+
+  const heartbeat = async () => {
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    await args.onProgress?.({
+      progress: elapsed,
+      total,
+      percent: Math.max(3, Math.min(95, Math.round((elapsed / total) * 100))),
+      message: "قيد التحرير…",
+      taskId: task.id,
+    });
+  };
+
+  while (Date.now() < deadline) {
+    if (args.signal?.aborted) break;
+    const tick = new Promise<"tick">((r) => setTimeout(r, POLL_INTERVAL_MS));
+    const raced = await Promise.race([
+      processPromise.then((r) => ({ from: "process" as const, r })),
+      tick.then(() => null),
+    ]);
+    if (raced) {
+      settled = true;
+      if (raced.r.kind === "completed") {
+        await args.onProgress?.({ progress: total, total, percent: 100, message: "تم التحرير بنجاح ✓", taskId: task.id });
+      }
+      return raced.r;
+    }
+
+    try {
+      const st = await getMergeJob(jobId);
+      if (st.status === "completed" && st.resultUrls.length) {
+        settled = true;
+        task = (await updateTask(task.id, { status: "completed", progress: 100, resultUrls: st.resultUrls, errorMessage: null })) ?? task;
+        await args.onProgress?.({ progress: total, total, percent: 100, message: "تم التحرير بنجاح ✓", taskId: task.id });
+        return { kind: "completed", task };
+      }
+      if (st.status === "failed") {
+        settled = true;
+        task = (await updateTask(task.id, { status: "failed", progress: 100, errorMessage: st.error ?? "فشل التحرير في الخدمة" })) ?? task;
+        return { kind: "failed", task };
+      }
+      if (st.progress > 0) {
+        await args.onProgress?.({
+          progress: Math.round((Date.now() - startedAt) / 1000),
+          total,
+          percent: Math.max(3, Math.min(95, st.progress)),
+          message: "قيد التحرير…",
+          taskId: task.id,
+        });
+      } else {
+        await heartbeat();
+      }
+    } catch {
+      await heartbeat();
+    }
+  }
+
   return { kind: "processing", task };
 }
 

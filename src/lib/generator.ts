@@ -699,7 +699,7 @@ export function renderTaskForClient(task: TaskRow, opts: { forTool?: "get_task" 
   const lines: string[] = [];
   if (task.status === "completed") {
     if (task.type === "image") lines.push(`✅ تم توليد الصورة بنجاح`);
-    else if (task.type === "merge") lines.push(`✅ تم دمج المقاطع بنجاح`);
+    else if (task.type === "merge") lines.push(task.prompt.startsWith("تحرير") ? `✅ تم تحرير الفيديو بنجاح` : `✅ تم دمج المقاطع بنجاح`);
     else lines.push(`✅ تم توليد الفيديو بنجاح`);
     for (const url of task.resultUrls) {
       if (task.type === "image") lines.push(`![image](${url})`);
@@ -708,7 +708,7 @@ export function renderTaskForClient(task: TaskRow, opts: { forTool?: "get_task" 
     for (const url of task.resultUrls) lines.push(`الرابط المباشر: ${url}`);
     if (task.provider) lines.push(`provider: ${task.provider} — model: ${task.model}`);
     // تحذير انتهاء الصلاحية يُذكر لمهام الدمج حرفيًا كما تشترط المواصفة
-    if (task.type === "merge") lines.push(`⚠️ ملف الدمج يُحذف من خدمة الدمج بعد ~24 ساعة — شاهده/نزّله سريعًا.`);
+    if (task.type === "merge") lines.push(task.prompt.startsWith("تحرير") ? `⚠️ ملف التحرير يُحذف من الخدمة بعد ~24 ساعة — شاهده/نزّله سريعًا.` : `⚠️ ملف الدمج يُحذف من خدمة الدمج بعد ~24 ساعة — شاهده/نزّله سريعًا.`);
     lines.push(`أظهر الرابط أعلاه للمستخدم مباشرة.`);
     return lines.join("\n");
   }

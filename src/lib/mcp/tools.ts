@@ -8,7 +8,8 @@
  */
 import { MODELS } from "../models";
 import { runGeneration, refreshTask, renderTaskForClient, type ProgressCb } from "../generator";
-import { runMerge } from "../merger";
+import { runEdit, runMerge } from "../merger";
+import { parseEditPlan } from "../merge/edit";
 import { getTask, listRecentTasks } from "../tasks";
 
 export interface ToolDef {
@@ -122,6 +123,77 @@ export const TOOLS: ToolDef[] = [
           maximum: 240,
           default: 60,
           description: "Wait inline (streaming progress) for the merge to finish. Otherwise a merge task_id is returned for get_task polling.",
+        },
+      },
+    },
+  },
+  {
+    name: "edit_video",
+    title: "Edit video",
+    description:
+      "Edit one or more video clips remotely — the heavy ffmpeg work runs on the server, nothing is processed locally. " +
+      "Supported operations (applied in order): trim (cut a time range), crop (convert aspect ratio, e.g. 16:9 → vertical 9:16 for Reels, " +
+      "crop-fill so there are no black bars or distortion), resize (fit = letterbox, fill = crop-fill). " +
+      "Provide 'urls' (1+ public direct video links) OR 'task_ids' (completed video tasks). " +
+      "The tool waits briefly (streaming progress), then returns an edit task_id — call get_task with it every ~10 seconds " +
+      "until status is completed, then show the edited video URL and stop. " +
+      "Note: the edited file is stored for ~24 hours only — tell the user to watch/download it promptly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        urls: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+          description: "Public direct video URLs (http/https). Multiple clips are concatenated first, then edited as one timeline.",
+        },
+        task_ids: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+          description: "Alternative to urls: task_ids of COMPLETED video tasks — their result URLs are used as sources.",
+        },
+        source_trims: {
+          type: "array",
+          maxItems: 10,
+          description: "Optional per-source trim BEFORE concatenation (efficient — only the wanted part is decoded). seq = source index starting at 0.",
+          items: {
+            type: "object",
+            properties: {
+              seq: { type: "integer", minimum: 0, description: "Source index (0-based)." },
+              start: { type: "number", minimum: 0, description: "Trim start in seconds (default 0)." },
+              end: { type: "number", description: "Trim end in seconds (omit = until the source ends)." },
+            },
+            required: ["seq"],
+          },
+        },
+        ops: {
+          type: "array",
+          maxItems: 10,
+          description: "Ordered operations applied to the final timeline after concatenation.",
+          items: {
+            type: "object",
+            properties: {
+              op: { enum: ["trim", "crop", "resize"] },
+              start: { type: "number", minimum: 0, description: "trim: start in seconds (default 0)." },
+              end: { type: "number", description: "trim: end in seconds (omit = until the end)." },
+              aspect: { enum: ["9:16", "16:9", "1:1"], description: "crop: target aspect. 9:16 → 1080x1920, 16:9 → 1920x1080, 1:1 → 1080x1080. Crop-fill: sides are cut, no black bars." },
+              gravity: { enum: ["center", "top", "bottom", "left", "right"], description: "crop: which part of the frame to keep (default center)." },
+              width: { type: "integer", description: "resize: target width (max 1920)." },
+              height: { type: "integer", description: "resize: target height (max 1920)." },
+              mode: { enum: ["fit", "fill"], description: "resize: fit = letterbox (black bars if aspect differs), fill = crop-fill (default fit)." },
+            },
+            required: ["op"],
+          },
+        },
+        wait_seconds: {
+          type: "integer",
+          minimum: 0,
+          maximum: 240,
+          default: 60,
+          description: "Wait inline (streaming progress) for the edit to finish. Otherwise an edit task_id is returned for get_task polling.",
         },
       },
     },
@@ -281,6 +353,73 @@ export async function callTool(
     }
   }
 
+  if (name === "edit_video") {
+    // 1) جمع الروابط: task_ids تُحلّ من قاعدة البيانات، ثم urls المباشرة (مصدر واحد على الأقل)
+    const resolved: string[] = [];
+    const problems: string[] = [];
+    const taskIds = Array.isArray(args.task_ids) ? args.task_ids.map((t) => String(t).trim()).filter(Boolean) : [];
+    for (const tid of taskIds) {
+      const t = await getTask(tid);
+      if (!t) {
+        problems.push(`task_id ${tid}: غير موجود في قاعدة البيانات`);
+      } else if (t.status !== "completed" || t.resultUrls.length === 0) {
+        problems.push(`task_id ${tid}: الحالة ${t.status} — لا يوجد رابط جاهز للتحرير بعد`);
+      } else {
+        resolved.push(...t.resultUrls);
+      }
+    }
+    const direct = Array.isArray(args.urls)
+      ? args.urls.map((u) => String(u).trim()).filter((u) => /^https?:\/\//i.test(u))
+      : [];
+    const badUrls = Array.isArray(args.urls)
+      ? args.urls.map((u) => String(u).trim()).filter((u) => u && !/^https?:\/\//i.test(u))
+      : [];
+    for (const u of badUrls) problems.push(`رابط غير صالح (يجب أن يكون http/https مباشرًا): ${u}`);
+
+    const urls = [...resolved, ...direct];
+    if (urls.length < 1) {
+      const detail = problems.length ? `\nتفاصيل:\n- ${problems.join("\n- ")}` : "";
+      return {
+        ...text(
+          `❌ التحرير يحتاج مصدرًا واحدًا على الأقل: مرّر urls (روابط مباشرة) أو task_ids لمهام مكتملة.${detail}`
+        ),
+        isError: true,
+      };
+    }
+    if (urls.length > 10) {
+      return { ...text("❌ أقصى عدد مقاطع للتحرير هو 10 (حدود الخدمة)."), isError: true };
+    }
+
+    // 2) تحقق مبكر من خطة التحرير (أخطاء واضحة تعود فورًا للعميل قبل أي عمل)
+    const plan: Record<string, unknown> = {};
+    if (args.ops !== undefined) plan.ops = args.ops;
+    if (args.source_trims !== undefined) plan.source_trims = args.source_trims;
+    const parsed = parseEditPlan(plan);
+    if (!parsed.ok) {
+      return { ...text(`❌ خطة التحرير مرفوضة: ${parsed.error}`), isError: true };
+    }
+
+    // 3) تنفيذ التحرير عبر خدمة الدمج (نفس بنية المهام — ffmpeg يعمل على الخادم)
+    const outcome = await runEdit({
+      urls,
+      ops: parsed.plan,
+      waitSeconds: clamp(args.wait_seconds, 0, 240, 60),
+      onProgress: ctx.sendProgress,
+      signal: ctx.signal,
+    });
+
+    switch (outcome.kind) {
+      case "completed":
+        return text(renderTaskForClient(outcome.task));
+      case "processing":
+        return text(renderTaskForClient(outcome.task));
+      case "failed":
+        return { ...text(renderTaskForClient(outcome.task)), isError: true };
+      case "invalid":
+        return { ...text(`❌ ${outcome.reason}`), isError: true };
+    }
+  }
+
   if (name === "get_task") {
     const taskId = str(args.task_id);
     if (!taskId) return { ...text("❌ task_id مطلوب (required)"), isError: true };
@@ -320,6 +459,7 @@ export const SERVER_INSTRUCTIONS =
   "IMPORTANT: the server automatically switches API keys on any failure (exhausted balance, invalid key, rate limits) and continues the SAME task under the same task_id — " +
   "you will never encounter key/balance errors. Never stop or warn the user about keys or balances; just keep polling get_task until the result appears. " +
   "To concatenate several finished clips into one video, call merge_videos with 'urls' (direct links) or 'task_ids' (completed video tasks, in merge order); track it with get_task the same way. " +
+  "To EDIT clips (trim, convert to vertical 9:16 for Reels via crop-fill, resize fit/fill), call edit_video with 'urls' (1+) or 'task_ids' plus an 'ops' list and optional 'source_trims'; track it with get_task the same way. " +
   "Use list_media to recall previously generated media from the database.";
 
 export const SUPPORTED_MODELS_TEXT = MODELS.map((m) => `${m.canonical} (${m.type})`).join(", ");

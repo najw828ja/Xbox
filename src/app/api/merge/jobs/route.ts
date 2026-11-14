@@ -5,6 +5,7 @@
 import { NextRequest } from "next/server";
 import * as store from "@/lib/merge/store";
 import { mergeConfig } from "@/lib/merge/config";
+import { parseEditPlan } from "@/lib/merge/edit";
 import { handleOptions, sendJson, sendError } from "@/lib/merge/http";
 
 export const runtime = "nodejs";
@@ -19,7 +20,7 @@ interface RawSource {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { videos?: unknown; sources?: unknown };
+  let body: { videos?: unknown; sources?: unknown; ops?: unknown; source_trims?: unknown };
   try {
     const text = await req.text();
     if (text.length > 256 * 1024) return sendError("جسم الطلب كبير جدًا", 413);
@@ -52,6 +53,27 @@ export async function POST(req: NextRequest) {
     }
   } catch (e) {
     return sendError(`مدخلات تالفة: ${e instanceof Error ? e.message : String(e)}`, 400);
+  }
+
+  // خطة تحرير اختيارية (Phase 2) — غائبة = سلوك الدمج القياسي حرفيًا
+  // شكلان مقبولان: ops ككائن خطة كامل، أو شكل مسطّح {ops: [...], source_trims: [...]}
+  let opsRaw: unknown = body.ops;
+  if (body.source_trims !== undefined || Array.isArray(body.ops)) {
+    const planObj: Record<string, unknown> = {};
+    if (body.ops !== undefined && body.ops !== null) {
+      if (Array.isArray(body.ops)) planObj.ops = body.ops;
+      else if (typeof body.ops === "object") Object.assign(planObj, body.ops);
+    }
+    if (body.source_trims !== undefined && body.source_trims !== null) {
+      planObj.source_trims = body.source_trims;
+    }
+    opsRaw = planObj;
+  }
+  let opsPlan: unknown;
+  if (body.ops !== undefined && body.ops !== null || body.source_trims !== undefined && body.source_trims !== null) {
+    const parsed = parseEditPlan(opsRaw);
+    if (!parsed.ok) return sendError(`خطة التحرير مرفوضة: ${parsed.error}`, 400);
+    opsPlan = parsed.plan;
   }
 
   if (!sources.length) {
@@ -88,7 +110,7 @@ export async function POST(req: NextRequest) {
     /* تجاهل */
   }
 
-  const job = await store.createJob(sources);
+  const job = await store.createJob(sources, opsPlan);
 
   const fileSources = sources
     .map((s, seq) => ({ s, seq }))
@@ -112,6 +134,9 @@ export async function POST(req: NextRequest) {
   if (fileSources.length) {
     payload.uploads = fileSources;
     payload.uploadChunkBytes = mergeConfig.uploadChunkBytes;
+  }
+  if (opsPlan !== undefined) {
+    payload.ops = opsPlan;
   }
 
   return sendJson(payload, 201);
