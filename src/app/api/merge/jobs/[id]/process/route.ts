@@ -60,7 +60,9 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       expiresAt: job2 ? String(job2.expires_at) : undefined,
     });
   } catch (e) {
-    const code = (e as { code?: number }).code || 500;
+    // err.code قد يكون نصًا (مثل ENOENT من fs) وليس رقم HTTP — نتعامل مع الأرقام فقط
+    const rawCode = (e as { code?: unknown }).code;
+    const code = typeof rawCode === "number" && rawCode >= 400 && rawCode <= 599 ? rawCode : 500;
     const msg = e instanceof Error && e.message ? e.message : "فشل الدمج بسبب غير معروف";
     return sendError(msg, code);
   }
